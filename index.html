@@ -1,0 +1,4356 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>F1 CAREER MODE — Simulatore di Carriera</title>
+
+<!-- ===== TAILWIND CSS VIA CDN ===== -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          carbon:  '#0b0d10',
+          carbon2: '#12161c',
+          carbon3: '#1a2028',
+          racing:  '#e10600',
+          aston:   '#00594f',
+          alpine:  '#0090ff',
+          gold:    '#ffd447'
+        },
+        fontFamily: {
+          sans: ['Inter', 'Segoe UI', 'system-ui', 'sans-serif'],
+          mono: ['ui-monospace', 'SFMono-Regular', 'monospace']
+        }
+      }
+    }
+  }
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+
+<style>
+  .carbon-bg {
+    background-color:#0b0d10;
+    background-image:
+      linear-gradient(27deg, #15181d 5px, transparent 5px),
+      linear-gradient(207deg, #15181d 5px, transparent 5px),
+      linear-gradient(27deg, #101317 5px, transparent 5px),
+      linear-gradient(207deg, #101317 5px, transparent 5px),
+      linear-gradient(90deg, #13161b 10px, transparent 10px),
+      linear-gradient(#14171c 25%, #101216 25%, #101216 50%, transparent 50%, transparent 75%, #101216 75%, #101216);
+    background-size: 20px 20px;
+  }
+  .neon { box-shadow: 0 0 0 1px rgba(225,6,0,.35), 0 0 22px -6px rgba(225,6,0,.55); }
+  .neon-soft { box-shadow: 0 0 0 1px rgba(255,255,255,.07), 0 10px 30px -12px rgba(0,0,0,.9); }
+
+  @keyframes fadeUp { from { opacity:0; transform: translateY(14px);} to {opacity:1; transform:none;} }
+  .anim { animation: fadeUp .35s ease both; }
+  @keyframes pulseGlow { 0%,100%{opacity:.55} 50%{opacity:1} }
+  .pulse-glow { animation: pulseGlow 1.8s ease-in-out infinite; }
+
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-track { background:#0b0d10; }
+  ::-webkit-scrollbar-thumb { background:#2a323d; border-radius:8px; }
+  ::-webkit-scrollbar-thumb:hover { background:#3a4552; }
+
+  input[type=range] { -webkit-appearance:none; appearance:none; height:8px; border-radius:99px; background:#252c36; outline:none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:24px; height:24px; border-radius:50%; background:#e10600; cursor:pointer; box-shadow:0 0 12px rgba(225,6,0,.8); }
+  input[type=range]::-moz-range-thumb { width:24px; height:24px; border:0; border-radius:50%; background:#e10600; cursor:pointer; }
+
+  input, select, button { font-size:16px; }
+  html { -webkit-text-size-adjust:100%; }
+
+  .tabbtn.active { background:#e10600; color:#fff; box-shadow:0 0 18px -4px rgba(225,6,0,.9); }
+
+  button:focus-visible { outline: 2px solid #e10600; outline-offset: 2px; }
+
+  details > summary { list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: '▸ '; display: inline-block; transition: transform .2s; }
+  details[open] > summary::before { content: '▾ '; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+    .pulse-glow { animation: none !important; opacity: 1 !important; }
+  }
+</style>
+</head>
+
+<body class="carbon-bg text-slate-100 font-sans min-h-screen antialiased selection:bg-racing selection:text-white">
+
+<div id="app" class="max-w-5xl mx-auto px-3 pb-28 pt-4 sm:px-5"></div>
+
+<div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-5 z-50 hidden" role="status" aria-live="polite" aria-atomic="true">
+  <div id="toastBox" class="px-4 py-3 rounded-xl bg-carbon3 neon-soft text-sm font-semibold"></div>
+</div>
+
+<script>
+
+/* =========================================================================
+   ================================ CONFIG =================================
+   ========================================================================= */
+
+const SAVE_KEY = 'f1_career_save_v18';
+const LEGACY_SAVE_KEYS = ['f1_career_save_v17', 'f1_career_save_v16', 'f1_career_save_v15', 'f1_career_save_v14', 'f1_career_save_v13', 'f1_career_save_v12'];
+const SAVE_VERSION = 18;
+
+const POINTS = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1];
+const OVR_FIRE = 45;
+const RETIRE_AGE = 40;
+const RD_BLOCK = 8;
+
+const ATTR_POOL = 190;
+const NAME_MAX = 24;
+const FULLNAME_MAX = 32;
+
+const TITLE_POINTS_THRESHOLD = 355;
+
+const BUDGET_CAP = 135;
+const LUXURY_TAX_RATE = 0.5;
+const RD_OVER_CAP_MAX_MULT = 2.0;
+
+const REGULATION_PERIOD = 5;
+const REGULATION_MEDIAN = 68;
+const REGULATION_COMPRESSION = 0.35;
+const REGULATION_NOISE = 0.8;
+const REG_FLOOR = Math.max(45, REGULATION_MEDIAN - 20);
+
+const REG_FLOP_CAR_THRESHOLD = 72;
+const REG_FLOP_CHANCE = 0.18;
+
+const BUDGET_CARRYOVER_RATE = 0.40;
+const BUDGET_CARRYOVER_CAP  = 30;
+
+const SIM_BUFF_CHARGES = 2;
+const SIM_BUFF_FAIL_REDUCTION = 0.10;
+
+const RD_LOG_CAP = 50;
+const HISTORY_CAP = 200;
+const HOF_CAP = 200;
+const SPONSOR_HISTORY_CAP = 100;
+const REG_HISTORY_CAP = 50;
+
+const SIM_TUNING = {
+  qualiCarWeight: 0.65,
+  qualiOvrWeight: 0.35,
+  qualiPlayerSpeedBoost: 0.14,
+  qualiNoise: 2.5,
+  qualiNegScaleConsistency: 0.008,
+  qualiNegScaleMin: 0.55,
+  qualiNegScaleMax: 1.35,
+  qualiWeatherChaosScale: 0.5,
+
+  raceCarWeight: 0.52,
+  raceOvrWeight: 0.48,
+  raceGridPenalty: 0.8,
+  raceNoise: 7.5,
+  raceNegScaleConsistency: 0.011,
+  raceNegScaleMin: 0.40,
+  raceNegScaleMax: 1.45,
+  raceAiFlavorNoise: 1.2,
+
+  snowballThreshold: 1.35,
+  snowballSlope: 0.05,
+  snowballMax: 3.5,
+
+  dnfBase: 0.04,
+  dnfCarSlope: 0.0010,
+  dnfWeatherSlope: 0.012,
+  dnfMin: 0.04,
+  dnfMax: 0.10,
+
+  scProbability: 0.20,
+  scCompaction: 0.45,
+  scNoise: 1.5,
+  gapFactor: 0.55,
+  scGapCapMin: 10,
+  scGapCapMax: 15
+};
+
+/* =========================================================================
+   =============================== DATA ====================================
+   ========================================================================= */
+
+const TEAM_DB = [
+  { id:'mer', name:'Freccia d\'Argento',   short:'SIL', color:'#00d2be', car:87, prestige:96, budget:138, low:false, minCar:82 },
+  { id:'fer', name:'Cavallino Veloce',     short:'CAV', color:'#e10600', car:87, prestige:99, budget:140, low:false, minCar:80 },
+  { id:'mcl', name:'Horizon Racing',       short:'HRZ', color:'#ff8000', car:86, prestige:95, budget:140, low:false, minCar:78 },
+  { id:'rbr', name:'Apex Energy',          short:'APX', color:'#1b3d8f', car:84, prestige:94, budget:138, low:false, minCar:76 },
+  { id:'rbu', name:'Toro Motori',          short:'TOR', color:'#6692ff', car:78, prestige:64, budget:112, low:false, minCar:68, isSatellite:true, maxCar:79 },
+  { id:'alp', name:'Alpine Coast',         short:'ALP', color:'#0090ff', car:77, prestige:66, budget:115, low:true,  minCar:66 },
+  { id:'aud', name:'Scuderia Anelli',      short:'ANL', color:'#009b3a', car:75, prestige:70, budget:120, low:true,  minCar:64 },
+  { id:'has', name:'Vector Motorsport',    short:'VEC', color:'#b6babd', car:73, prestige:58, budget:108, low:true,  minCar:62, isSatellite:true, maxCar:79 },
+  { id:'wil', name:'Grove Heritage',       short:'GRV', color:'#00a0de', car:70, prestige:72, budget:118, low:true,  minCar:60 },
+  { id:'ast', name:'Green Peak GP',        short:'GPK', color:'#00594f', car:65, prestige:78, budget:132, low:true,  minCar:55 },
+  { id:'cad', name:'Detroit Star',         short:'DET', color:'#c9a227', car:60, prestige:52, budget:105, low:true,  minCar:50 }
+];
+
+const AI_DRIVERS = [
+  { id:'ai1',  name:'Max Verstacrit',    nat:'🇳🇱', team:'rbr', ovr:93, age:29 },
+  { id:'ai2',  name:'Isacco Hagi',        nat:'🇫🇷', team:'rbr', ovr:81, age:22 },
+  { id:'ai3',  name:'Carlo Leclerc',      nat:'🇲🇨', team:'fer', ovr:88, age:28 },
+  { id:'ai4',  name:'Luigi Amilton',      nat:'🇬🇧', team:'fer', ovr:89, age:41 },
+  { id:'ai5',  name:'Lando Noris',        nat:'🇬🇧', team:'mcl', ovr:87, age:26 },
+  { id:'ai6',  name:'Oscar Pastori',      nat:'🇦🇺', team:'mcl', ovr:85, age:25 },
+  { id:'ai7',  name:'Giorgio Ruspa',      nat:'🇬🇧', team:'mer', ovr:86, age:28 },
+  { id:'ai8',  name:'Ciro Antonelli',     nat:'🇮🇹', team:'mer', ovr:84, age:20 },
+  { id:'ai9',  name:'Fernando Alonza',    nat:'🇪🇸', team:'ast', ovr:86, age:45 },
+  { id:'ai10', name:'Lanfranco Strologo',nat:'🇨🇦', team:'ast', ovr:78, age:27 },
+  { id:'ai11', name:'Alessandro Albani', nat:'🇹🇭', team:'wil', ovr:79, age:30 },
+  { id:'ai12', name:'Carlo Sainzio',     nat:'🇪🇸', team:'wil', ovr:84, age:32 },
+  { id:'ai13', name:'Elia Losco',        nat:'🇳🇿', team:'rbu', ovr:81, age:24 },
+  { id:'ai14', name:'Arvino Lind',       nat:'🇬🇧', team:'rbu', ovr:77, age:19 },
+  { id:'ai15', name:'Stefano Oconi',     nat:'🇫🇷', team:'has', ovr:73, age:29 },
+  { id:'ai16', name:'Olli Perman',       nat:'🇫🇮', team:'has', ovr:79, age:23 },
+  { id:'ai17', name:'Pietro Gaslini',    nat:'🇫🇷', team:'alp', ovr:83, age:21 },
+  { id:'ai18', name:'Francesco Colapinta',nat:'🇦🇷',team:'alp', ovr:78, age:30 },
+  { id:'ai19', name:'Niccolò Alken',     nat:'🇩🇪', team:'aud', ovr:77, age:23 },
+  { id:'ai20', name:'Gabriele Bortolo',  nat:'🇧🇷', team:'aud', ovr:78, age:39 },
+  { id:'ai21', name:'Sergio Perego',     nat:'🇲🇽', team:'cad', ovr:81, age:21 },
+  { id:'ai22', name:'Walter Botta',      nat:'🇫🇮', team:'cad', ovr:80, age:36 }
+];
+
+const CALENDAR = [
+  { gp:'Australia',    circuit:'Melbourne',     flag:'🇦🇺', type:'balanced' },
+  { gp:'Cina',         circuit:'Shanghai',      flag:'🇨🇳', type:'balanced' },
+  { gp:'Giappone',     circuit:'Suzuka',        flag:'🇯🇵', type:'twisty' },
+  { gp:'Bahrain',      circuit:'Sakhir',        flag:'🇧🇭', type:'power' },
+  { gp:'Arabia Saudita',circuit:'Jeddah',        flag:'🇸🇦', type:'power' },
+  { gp:'Miami',        circuit:'Miami',         flag:'🇺🇸', type:'balanced' },
+  { gp:'Canada',       circuit:'Montreal',      flag:'🇨🇦', type:'balanced' },
+  { gp:'Monaco',       circuit:'Montecarlo',    flag:'🇲🇨', type:'twisty' },
+  { gp:'Spagna',       circuit:'Barcellona',    flag:'🇪🇸', type:'balanced' },
+  { gp:'Austria',      circuit:'Spielberg',     flag:'🇦🇹', type:'power' },
+  { gp:'Gran Bretagna',circuit:'Silverstone',   flag:'🇬🇧', type:'twisty' },
+  { gp:'Belgio',       circuit:'Spa',           flag:'🇧🇪', type:'power' },
+  { gp:'Ungheria',     circuit:'Hungaroring',   flag:'🇭🇺', type:'twisty' },
+  { gp:'Paesi Bassi',  circuit:'Zandvoort',     flag:'🇳🇱', type:'twisty' },
+  { gp:'Italia',       circuit:'Monza',         flag:'🇮🇹', type:'power' },
+  { gp:'Spagna (Madrid)',circuit:'Madring',     flag:'🇪🇸', type:'balanced' },
+  { gp:'Azerbaijan',   circuit:'Baku',          flag:'🇦🇿', type:'power' },
+  { gp:'Singapore',    circuit:'Marina Bay',    flag:'🇸🇬', type:'twisty' },
+  { gp:'Texas',        circuit:'Austin',        flag:'🇺🇸', type:'balanced' },
+  { gp:'Messico',      circuit:'Città del Messico', flag:'🇲🇽', type:'balanced' },
+  { gp:'Brasile',      circuit:'Interlagos',    flag:'🇧🇷', type:'balanced' },
+  { gp:'Las Vegas',    circuit:'Las Vegas',     flag:'🇺🇸', type:'power' },
+  { gp:'Qatar',        circuit:'Lusail',        flag:'🇶🇦', type:'power' },
+  { gp:'Abu Dhabi',    circuit:'Yas Marina',    flag:'🇦🇪', type:'balanced' }
+];
+
+const TITLE_THRESHOLD_PER_RACE = TITLE_POINTS_THRESHOLD / CALENDAR.length;
+
+const NATIONS = [
+  ['🇮🇹','Italia'],['🇬🇧','Regno Unito'],['🇪🇸','Spagna'],['🇫🇷','Francia'],
+  ['🇩🇪','Germania'],['🇳🇱','Paesi Bassi'],['🇧🇷','Brasile'],['🇦🇷','Argentina'],
+  ['🇺🇸','Stati Uniti'],['🇲🇽','Messico'],['🇯🇵','Giappone'],['🇦🇺','Australia'],
+  ['🇨🇦','Canada'],['🇧🇪','Belgio'],['🇦🇹','Austria'],['🇨🇭','Svizzera'],
+  ['🇵🇹','Portogallo'],['🇸🇪','Svezia'],['🇫🇮','Finlandia'],['🇵🇱','Polonia']
+];
+
+const RANDOM_NAMES_FIRST = ['Marcus','Dante','Klaus','Enzo','Lucas','Matteo','Sven','Julian','Tobias','Leo','Axel','Kian','Roman','Hugo','Niklas','Liam','Noah'];
+const RANDOM_NAMES_LAST  = ['Vance','Morel','Berg','Rinaldi','Dubois','Weber','Keller','Costa','Silva','Novak','Jensen','Fischer','Romero','Schneider','Moretti','Rossi'];
+
+const F2_ROOKIE_POOL = [
+  { name:'Raffaele Camara',    nat:'🇮🇹' },
+  { name:'Giosuè Durken',      nat:'🇵🇾' },
+  { name:'Ritomo Miyato',      nat:'🇯🇵' },
+  { name:'Noele Leone',        nat:'🇲🇽' },
+  { name:'Dino Beganovich',    nat:'🇸🇪' },
+  { name:'Gabriele Minì',      nat:'🇮🇹' },
+  { name:'Oliviero Goete',     nat:'🇩🇪' },
+  { name:'Sebastiano Montoya', nat:'🇨🇴' },
+  { name:'Kush Mainini',       nat:'🇮🇳' },
+  { name:'Lorenzo Van Open',   nat:'🇳🇱' }
+];
+
+const RD_PACKAGES = [
+  { id:'aero',  name:'Pacchetto Aerodinamico', icon:'🪁', gainMult:1.10, failAdd: 0.04,
+    desc:'Nuova ala anteriore, fondo e diffusore rivisti. Più resa, ma più rischio.',
+    note:'Guadagno +10% • rischio +4%' },
+  { id:'power', name:'Upgrade Power Unit',     icon:'⚡', gainMult:1.00, failAdd: 0,
+    desc:'Mappature ibride e nuova unità energetica. Profilo neutro.',
+    note:'Profilo neutro' },
+  { id:'chass', name:'Revisione Telaio',       icon:'🔩', gainMult:0.90, failAdd:-0.04,
+    desc:'Sospensioni e rigidità torsionale. Più affidabile, guadagni più contenuti.',
+    note:'Guadagno −10% • rischio −4%' },
+  { id:'sim',   name:'Correlazione Simulatore',icon:'🖥️', gainMult:0.70, failAdd:-0.05,
+    desc:'Guadagni ridotti e danni dimezzati se fallisce; abbassa il rischio dei prossimi ' + SIM_BUFF_CHARGES + ' sviluppi.',
+    note:'Guadagno −30% • prossimi ' + SIM_BUFF_CHARGES + ' sviluppi: −10% rischio' }
+];
+
+const NEUTRAL_PACKAGE = { id:'none', gainMult:1, failAdd:0 };
+function rdPackageById(id) {
+  return RD_PACKAGES.find(p => p.id === id) || NEUTRAL_PACKAGE;
+}
+
+const RD_STRATEGIES = {
+  cons: { name:'Conservativa', cost:18, gainMin:0.3, gainMax:1.2, failChance:0.12, failMag:0.5 },
+  bal:  { name:'Bilanciata',   cost:32, gainMin:0.6, gainMax:2.2, failChance:0.24, failMag:1.0 },
+  agg:  { name:'Aggressiva',   cost:50, gainMin:1.0, gainMax:4.2, failChance:0.35, failMag:1.5 }
+};
+
+const REGULATION_STRATEGIES = {
+  rev: {
+    id:'rev', name:'Progetto Rivoluzionario', icon:'🚀',
+    cost:40, deltaMin:-3, deltaMax:10,
+    desc:'Ripensamento totale della monoposto. Altissima varianza; i team di vertice rischiano un flop clamoroso (18%).',
+    hint:'-3 / +10'
+  },
+  bal: {
+    id:'bal', name:'Sviluppo Bilanciato', icon:'⚖️',
+    cost:20, deltaMin:1, deltaMax:5,
+    desc:'Progetto solido e coerente col regolamento. Crescita moderata ma affidabile.',
+    hint:'+1 / +5'
+  },
+  scommessa: {
+    id:'scommessa', name:'Scommessa Tecnica', icon:'🎲',
+    cost:10, deltaMin:-5, deltaMax:12,
+    desc:'Progetto sperimentale a basso costo. Rischio altissimo ma potenziale upside enorme: l\'unica vera arma dei team di fondo scala.',
+    hint:'-5 / +12'
+  },
+  cons: {
+    id:'cons', name:'Approccio Conservativo', icon:'🛡️',
+    cost:5, deltaMin:-1, deltaMax:2,
+    desc:'Interventi minimi, budget preservato per gli update in-season. Rischio basso.',
+    hint:'-1 / +2'
+  }
+};
+
+const SETUPS = [
+  { id:'aero', name:'Carico Aerodinamico Alto', icon:'🪂', desc:'Più grip nei tratti guidati e nei tornanti, ma penalizza i rettilinei veloci.', good:'twisty', bad:'power' },
+  { id:'bal',  name:'Assetto Bilanciato',        icon:'⚖️', desc:'Nessun rischio: un compromesso stabile, adatto a qualsiasi tracciato.',            good:null,    bad:null },
+  { id:'top',  name:'Velocità di Punta',         icon:'🚀', desc:'Massimizza i rettilinei veloci, ma soffre nei tratti tecnici e guidati.',          good:'power', bad:'twisty' }
+];
+
+function setupBonusFor(setupId, circuitType) {
+  const s = SETUPS.find(x => x.id === setupId);
+  if (!s) return 0;
+  if (s.good === null) return 1;
+  if (circuitType === s.good) return 3;
+  if (circuitType === s.bad) return -2;
+  return 0;
+}
+
+const STRATEGIES_DRY = [
+  { id:'1stop_soft_hard',      name:'1-Stop (Morbida/Dura)',               icon:'🟥', desc:'Grande picco prestazionale nella prima parte di gara, con un calo contenuto nel finale (mitigato da una buona Gestione Gomme).' },
+  { id:'2stop_soft_med_soft', name:'2-Stop (Morbida/Media/Morbida)',      icon:'🟨', desc:'Passo gara molto aggressivo che ripaga la sosta extra, ma resta letale su piste tecniche.' },
+  { id:'1stop_hard_med',      name:'1-Stop Conservativa (Dura/Media)',    icon:'⬜', desc:'Nessun picco di prestazione, ma degrado ridotto: premia la costanza senza regalare il risultato.' }
+];
+
+const STRATEGIES_WET = [
+  { id:'inter', name:'Gomme Intermedie', icon:'🟩', desc:'Bonus eccellente su pista Variabile, ma malus se la pioggia si intensifica.' },
+  { id:'wet',   name:'Gomme Full Wet',   icon:'🟦', desc:'Bonus deciso su Pioggia battente, ma malus disastroso su pista solo Variabile.' }
+];
+
+function pickAvailableStrategies(weatherName) {
+  return weatherName === 'Asciutto' ? STRATEGIES_DRY : STRATEGIES_WET;
+}
+
+function pickRandomStrategy(weatherName) {
+  const opts = pickAvailableStrategies(weatherName);
+  return opts[irnd(0, opts.length - 1)].id;
+}
+
+function applyStrategyEffect(stratId, weatherName, circuitType, tyres) {
+  let bonus = 0;
+  let chaosScale = 1;
+
+  const tyreFactor = clamp(((typeof tyres === 'number' ? tyres : 50) - 50) / 50, -0.5, 1);
+  const wearMult = clamp(1 - tyreFactor * 0.7, 0.3, 1.35);
+
+  switch (stratId) {
+    case '1stop_soft_hard':
+      bonus += 3.8;
+      bonus -= 2.5 * wearMult;
+      break;
+    case '2stop_soft_med_soft':
+      bonus += 4.2;
+      bonus -= 2.5 * wearMult;
+      if (circuitType === 'twisty') bonus -= 2.5;
+      break;
+    case '1stop_hard_med':
+      bonus += 0.3;
+      chaosScale = 0.75;
+      break;
+    case 'inter':
+      if (weatherName === 'Variabile') bonus += 4.5;
+      else if (weatherName === 'Pioggia') bonus -= 3.0;
+      break;
+    case 'wet':
+      if (weatherName === 'Pioggia') bonus += 4.5;
+      else if (weatherName === 'Variabile') bonus -= 6.5;
+      break;
+  }
+
+  return { bonus, chaosScale };
+}
+
+const SPONSOR_OBJECTIVES = [
+  { id:'top10x3', tier:'easy',   name:'Piazzamento in Top 10',    desc:'Ottieni un piazzamento in Top 10 in almeno 3 Gran Premi.', type:'top10',  target:3, reward:15 },
+  { id:'podi2',   tier:'medium', name:'Prestigio in Pista',      desc:'Sali sul podio (Top 3) in almeno 2 occasioni.',             type:'podium', target:2, reward:35 },
+  { id:'titolo',  tier:'hard',   name:'Ambizione Mondiale',      desc:'Vinci il Campionato Piloti in questa stagione (premio incassato con il budget della stagione successiva).', type:'title',  target:1, reward:90 }
+];
+
+function generateSponsorOffers() {
+  return SPONSOR_OBJECTIVES.map(o => ({
+    id: o.id, name: o.name, desc: o.desc, type: o.type, tier: o.tier,
+    target: o.target,
+    reward: Math.max(5, o.reward + irnd(-4, 6))
+  }));
+}
+
+/* =========================================================================
+   ============================ CORE STATE =================================
+   ========================================================================= */
+
+let S = null;
+let RNG_STATE = 0x9e3779b9;
+let HAS_SAVE_CACHE = null;
+let SAVE_WARNING_SHOWN = false;
+
+/* Durante la test suite save()/render()/toast() sono no-op: i test non
+   devono MAI toccare il salvataggio reale né il DOM. */
+let IO_SUSPENDED = false;
+
+/* =========================================================================
+   ================================ RNG ====================================
+   ========================================================================= */
+
+function seedRng(seed = Date.now()) {
+  RNG_STATE = (Number(seed) >>> 0) || 0x9e3779b9;
+}
+
+function rng() {
+  RNG_STATE = (Math.imul(RNG_STATE, 1664525) + 1013904223) >>> 0;
+  return RNG_STATE / 4294967296;
+}
+
+const rnd    = (a, b) => a + rng() * (b - a);
+const irnd   = (a, b) => Math.floor(rnd(a, b + 1));
+const clamp  = (v, a, b) => Math.max(a, Math.min(b, v));
+const round1 = v => Math.round(v * 10) / 10;
+const round3 = v => Math.round(v * 1000) / 1000;
+
+/* =========================================================================
+   ============================== UTILITY ==================================
+   ========================================================================= */
+
+function sanitizeName(str, max) {
+  const limit = Number.isInteger(max) && max > 0 ? max : NAME_MAX;
+  return String(str == null ? '' : str)
+    .replace(/[\u202A-\u202E\u2066-\u2069\u200B-\u200F\uFEFF]/g, '')
+    .replace(/[<>&"'`\\/]/g, '')
+    .trim()
+    .slice(0, limit)
+    .trim();
+}
+
+function esc(str) {
+  if (str == null) return '';
+  return String(str).replace(/[&<>"']/g, m => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[m]));
+}
+
+function safeColor(c, fallback) {
+  const fb = fallback || '#64748b';
+  if (typeof c !== 'string') return fb;
+  return /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(c) ? c : fb;
+}
+
+/* =========================================================================
+   ============================ PERSISTENCE ================================
+   ========================================================================= */
+
+let _saveTimer = null;
+let _saveDirty = false;
+
+function save() {
+  if (!S || IO_SUSPENDED) return false;
+  try {
+    S.version = SAVE_VERSION;
+    S.rngState = RNG_STATE >>> 0;
+    localStorage.setItem(SAVE_KEY, JSON.stringify(S));
+    HAS_SAVE_CACHE = true;
+    _saveDirty = false;
+    return true;
+  } catch (e) {
+    console.error('Impossibile salvare la carriera:', e);
+    if (!SAVE_WARNING_SHOWN) {
+      SAVE_WARNING_SHOWN = true;
+      try { toast('⚠️ Salvataggio non riuscito: i progressi non saranno persistenti', 'bad'); } catch (_) {}
+    }
+    return false;
+  }
+}
+
+function scheduleSave(delay) {
+  if (IO_SUSPENDED) return;
+  _saveDirty = true;
+  if (_saveTimer) return;
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    if (_saveDirty) save();
+  }, typeof delay === 'number' ? delay : 200);
+}
+
+/* force=true scrive sempre (chiusura pagina), force=false solo se c'è
+   qualcosa di dirty da scrivere (evita write ad ogni alt-tab). */
+function flushSave(force) {
+  if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+  if (force || _saveDirty) save();
+}
+
+function detectSave() {
+  try {
+    for (const key of [SAVE_KEY, ...LEGACY_SAVE_KEYS]) {
+      if (localStorage.getItem(key)) return true;
+    }
+  } catch (e) {
+    console.warn('localStorage non disponibile:', e);
+  }
+  return false;
+}
+
+function defaultRDSkillFor(prestige) {
+  return round3(0.5 + (prestige - 50) / 100 * 0.4);
+}
+
+function migrateSave(data) {
+  if (!data || typeof data !== 'object' || !data.player || !Array.isArray(data.teams) || !Array.isArray(data.drivers)) {
+    return null;
+  }
+  if (data.teams.length === 0 || data.drivers.length === 0) {
+    return null;
+  }
+
+  const migrated = typeof structuredClone === 'function' ? structuredClone(data) : JSON.parse(JSON.stringify(data));
+  const legacyHall = migrated.hallOfFame || [];
+
+  if (!Array.isArray(migrated.hallOfFamePiloti)) {
+    migrated.hallOfFamePiloti = legacyHall.map(h => ({
+      year: h.year, driverName: h.driverName, driverNat: h.driverNat,
+      teamName: h.teamName, teamColor: h.teamColor, playerWon: !!h.playerWon
+    }));
+  }
+  if (!Array.isArray(migrated.hallOfFameCostruttori)) {
+    migrated.hallOfFameCostruttori = legacyHall.map(h => ({
+      year: h.year, teamName: h.teamName, teamColor: h.teamColor,
+      playerTeamWon: !!h.playerWon
+    }));
+  }
+  delete migrated.hallOfFame;
+
+  migrated.version = SAVE_VERSION;
+  migrated.round = Number.isInteger(migrated.round) ? clamp(migrated.round, 0, CALENDAR.length) : 0;
+  migrated.year = Number.isInteger(migrated.year) ? migrated.year : 2026;
+  migrated.budget = Number.isFinite(migrated.budget) ? migrated.budget : 0;
+  migrated.pendingBonus = Number.isFinite(migrated.pendingBonus) ? Math.max(0, migrated.pendingBonus) : 0;
+  migrated.rdDone = Number.isInteger(migrated.rdDone) ? clamp(migrated.rdDone, 0, 2) : 0;
+  migrated.rdLog = Array.isArray(migrated.rdLog) ? migrated.rdLog.slice(0, RD_LOG_CAP) : [];
+  migrated.seasonLog = Array.isArray(migrated.seasonLog) ? migrated.seasonLog : [];
+  migrated.history = Array.isArray(migrated.history) ? migrated.history.slice(-HISTORY_CAP) : [];
+  migrated.sponsorHistory = Array.isArray(migrated.sponsorHistory) ? migrated.sponsorHistory.slice(0, SPONSOR_HISTORY_CAP) : [];
+  migrated.rookiePoolUsed = Array.isArray(migrated.rookiePoolUsed) ? migrated.rookiePoolUsed : [];
+  migrated.hallOfFamePiloti = Array.isArray(migrated.hallOfFamePiloti) ? migrated.hallOfFamePiloti.slice(-HOF_CAP) : [];
+  migrated.hallOfFameCostruttori = Array.isArray(migrated.hallOfFameCostruttori) ? migrated.hallOfFameCostruttori.slice(-HOF_CAP) : [];
+  migrated.setupBonus = Number.isFinite(migrated.setupBonus) ? migrated.setupBonus : 0;
+  migrated.setupLabel = typeof migrated.setupLabel === 'string' ? migrated.setupLabel : null;
+  migrated.playerStrategy = typeof migrated.playerStrategy === 'string' ? migrated.playerStrategy : null;
+  migrated.strategyLabel = typeof migrated.strategyLabel === 'string' ? migrated.strategyLabel : null;
+  migrated.lastSafetyCar = !!migrated.lastSafetyCar;
+  migrated.sponsor = migrated.sponsor && typeof migrated.sponsor === 'object' ? migrated.sponsor : null;
+  migrated.sponsorOffers = Array.isArray(migrated.sponsorOffers) ? migrated.sponsorOffers : null;
+  migrated.offers = Array.isArray(migrated.offers) ? migrated.offers : null;
+  migrated.fired = !!migrated.fired;
+  migrated.gameOver = !!migrated.gameOver;
+  migrated.retired = !!migrated.retired;
+  migrated.totals = {
+    seasons: 0, races: 0, wins: 0, podiums: 0, poles: 0, titles: 0, points: 0, dnf: 0,
+    ...(migrated.totals || {})
+  };
+
+  const telDefault = defaultTelemetry();
+  const tel = { ...telDefault, ...((migrated.telemetry && typeof migrated.telemetry === 'object') ? migrated.telemetry : {}) };
+  ['constructorTitles', 'driverTitles', 'weatherCounts', 'budgetSumByTeam', 'budgetSamplesByTeam'].forEach(k => {
+    if (!tel[k] || typeof tel[k] !== 'object' || Array.isArray(tel[k])) tel[k] = telDefault[k];
+  });
+  migrated.telemetry = tel;
+
+  if (migrated.sponsor) migrated.sponsor.justCompleted = false;
+
+  migrated.regulationPending = !!migrated.regulationPending;
+  migrated.regulationHistory = Array.isArray(migrated.regulationHistory)
+    ? migrated.regulationHistory.slice(-REG_HISTORY_CAP)
+    : [];
+  migrated.regulationSnapshot = (migrated.regulationSnapshot && typeof migrated.regulationSnapshot === 'object')
+    ? migrated.regulationSnapshot : null;
+  migrated.lastRegulationInfo = (migrated.lastRegulationInfo && typeof migrated.lastRegulationInfo === 'object')
+    ? migrated.lastRegulationInfo : null;
+
+  migrated.teams = migrated.teams.map(t => {
+    const base = Number.isFinite(t.budget) ? t.budget : 100;
+    return {
+      ...t,
+      color: safeColor(t.color),
+      budget: base,
+      budgetNow: Number.isFinite(t.budgetNow) ? t.budgetNow : base,
+      rdSkill: Number.isFinite(t.rdSkill) ? clamp(t.rdSkill, 0.2, 1.0) : defaultRDSkillFor(t.prestige || 70),
+      rdHistory: Array.isArray(t.rdHistory) ? t.rdHistory.slice(0, 20) : [],
+      simCharges: Number.isInteger(t.simCharges) ? clamp(t.simCharges, 0, SIM_BUFF_CHARGES) : 0,
+      car: Number.isFinite(t.car) ? clamp(t.car, 40, 99) : 70,
+      minCar: Number.isFinite(t.minCar) ? t.minCar : 40,
+      prestige: Number.isFinite(t.prestige) ? t.prestige : 70
+    };
+  });
+
+  const p = migrated.player;
+  p.id = 'PLAYER';
+  p.isPlayer = true;
+  p.teamId = p.teamId || migrated.teams[0]?.id;
+  p.name = sanitizeName(p.name || ((p.first || 'Player') + ' ' + (p.last || 'One')), FULLNAME_MAX) || 'Player One';
+  p.first = sanitizeName(p.first || 'Player');
+  p.last = sanitizeName(p.last || 'One');
+  p.nat = typeof p.nat === 'string' ? p.nat : '🇮🇹';
+  p.age = Number.isFinite(p.age) ? p.age : 19;
+  p.speed = Number.isFinite(p.speed) ? clamp(p.speed, 30, 99) : 55;
+  p.consistency = Number.isFinite(p.consistency) ? clamp(p.consistency, 30, 99) : 55;
+  p.tyres = Number.isFinite(p.tyres) ? clamp(p.tyres, 30, 99) : 55;
+  p.speedFrac = Number.isFinite(p.speedFrac) ? clamp(p.speedFrac, -1, 1) : 0;
+  p.consFrac  = Number.isFinite(p.consFrac)  ? clamp(p.consFrac,  -1, 1) : 0;
+  p.tyresFrac = Number.isFinite(p.tyresFrac) ? clamp(p.tyresFrac, -1, 1) : 0;
+  p.ovr = computeOVR(p.speed, p.consistency, p.tyres);
+  p.pts = Number.isFinite(p.pts) ? p.pts : 0;
+  p.wins = Number.isFinite(p.wins) ? p.wins : 0;
+  p.podiums = Number.isFinite(p.podiums) ? p.podiums : 0;
+  p.poles = Number.isFinite(p.poles) ? p.poles : 0;
+  p.dnf = Number.isFinite(p.dnf) ? p.dnf : 0;
+  p.contract = Number.isFinite(p.contract) ? p.contract : 0;
+  p.role = typeof p.role === 'string' ? p.role : 'Pilota Titolare';
+  p.salary = Number.isFinite(p.salary) ? p.salary : 0;
+
+  migrated.drivers = migrated.drivers.map(d => ({
+    ...d,
+    pts:     Number.isFinite(d.pts)     ? d.pts     : 0,
+    wins:    Number.isFinite(d.wins)    ? d.wins    : 0,
+    podiums: Number.isFinite(d.podiums) ? d.podiums : 0,
+    poles:   Number.isFinite(d.poles)   ? d.poles   : 0,
+    dnf:     Number.isFinite(d.dnf)     ? d.dnf     : 0,
+    name:    sanitizeName(d.name, FULLNAME_MAX) || 'Driver',
+    nat:     typeof d.nat === 'string' ? d.nat : '🏁',
+    teamId:  d.teamId || migrated.teams[0]?.id,
+    age:     Number.isFinite(d.age) ? d.age : 22,
+    ovr:     Number.isFinite(d.ovr) ? clamp(d.ovr, 1, 99) : 70,
+    isPlayer: !!d.isPlayer
+  }));
+
+  const validTeamIds = new Set(migrated.teams.map(t => t.id));
+  const firstTeamId  = migrated.teams[0]?.id || null;
+
+  if (firstTeamId && !validTeamIds.has(migrated.player.teamId)) {
+    migrated.player.teamId = firstTeamId;
+  }
+  migrated.drivers.forEach(d => {
+    if (!validTeamIds.has(d.teamId)) d.teamId = firstTeamId;
+  });
+
+  if (!migrated.drivers.some(d => d.isPlayer)) migrated.drivers.push(p);
+  else migrated.drivers = migrated.drivers.map(d => d.isPlayer ? p : d);
+
+  const screenNeeds = {
+    quali:       () => Array.isArray(migrated.grid) && migrated.grid.length > 0,
+    race:        () => Array.isArray(migrated.lastRace) && migrated.lastRace.length > 0,
+    strategy:    () => migrated.weather != null,
+    setup:       () => migrated.round < CALENDAR.length,
+    regulations: () => migrated.regulationPending === true,
+    market:      () => Array.isArray(migrated.offers) && migrated.offers.length > 0,
+    progress:    () => migrated.progression && typeof migrated.progression === 'object'
+  };
+  if (screenNeeds[migrated.screen] && !screenNeeds[migrated.screen]()) {
+    migrated.screen = 'hub';
+    migrated.tab = 'race';
+  }
+  if (migrated.regulationPending && migrated.screen === 'hub') {
+    migrated.screen = 'regulations';
+  }
+
+  if (!migrated.regulationPending) {
+    migrated.regulationSnapshot = null;
+  }
+
+  const rngState = Number.isFinite(migrated.rngState) ? migrated.rngState >>> 0 : 0x9e3779b9;
+  migrated.rngState = rngState;
+  return migrated;
+}
+
+function load() {
+  const keys = [SAVE_KEY, ...LEGACY_SAVE_KEYS];
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      const migrated = migrateSave(parsed);
+      if (!migrated) continue;
+      RNG_STATE = migrated.rngState >>> 0;
+      HAS_SAVE_CACHE = true;
+      if (key !== SAVE_KEY) {
+        try { localStorage.setItem(SAVE_KEY, JSON.stringify(migrated)); }
+        catch (e) { console.error('Migrazione salvataggio non completata:', e); }
+      }
+      return migrated;
+    } catch (e) {
+      console.error('Salvataggio corrotto o illeggibile su "' + key + '":', e);
+    }
+  }
+  HAS_SAVE_CACHE = false;
+  return null;
+}
+
+function wipe() {
+  try {
+    [SAVE_KEY, ...LEGACY_SAVE_KEYS].forEach(key => localStorage.removeItem(key));
+    HAS_SAVE_CACHE = false;
+    _saveDirty = false;
+    if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+    return true;
+  } catch (e) {
+    console.error('Impossibile eliminare il salvataggio:', e);
+    return false;
+  }
+}
+
+/* =========================================================================
+   ============================ TELEMETRY ==================================
+   ========================================================================= */
+
+function defaultTelemetry() {
+  return {
+    seasonsSimulated: 0,
+    constructorTitles: {},
+    driverTitles: {},
+    rookieTitles: 0,
+    championOvrSum: 0,
+    championOvrCount: 0,
+    dnfCount: 0,
+    scCount: 0,
+    weatherCounts: { Asciutto: 0, Variabile: 0, Pioggia: 0 },
+    rdSpendTotal: 0,
+    rdSuccessCount: 0,
+    rdFailCount: 0,
+    transfersCount: 0,
+    retirementsCount: 0,
+    budgetSumByTeam: {},
+    budgetSamplesByTeam: {}
+  };
+}
+
+function trackSeasonTelemetry(standings, tStandings) {
+  if (!S.telemetry) S.telemetry = defaultTelemetry();
+  const T = S.telemetry;
+
+  T.seasonsSimulated++;
+
+  const champ = standings[0];
+  const ctorChamp = tStandings[0];
+  if (champ) {
+    T.driverTitles[champ.id] = (T.driverTitles[champ.id] || 0) + 1;
+    T.championOvrSum += champ.ovr || 0;
+    T.championOvrCount++;
+    if (champ.id && champ.id.startsWith('rookie_')) T.rookieTitles++;
+  }
+  if (ctorChamp) {
+    T.constructorTitles[ctorChamp.id] = (T.constructorTitles[ctorChamp.id] || 0) + 1;
+  }
+
+  S.teams.forEach(t => {
+    const b = Number.isFinite(t.budgetNow) ? t.budgetNow : t.budget;
+    T.budgetSumByTeam[t.id] = (T.budgetSumByTeam[t.id] || 0) + b;
+    T.budgetSamplesByTeam[t.id] = (T.budgetSamplesByTeam[t.id] || 0) + 1;
+  });
+}
+
+function recordRaceTelemetry(weatherName, safetyCar) {
+  if (!S.telemetry) S.telemetry = defaultTelemetry();
+  const T = S.telemetry;
+  if (T.weatherCounts && weatherName in T.weatherCounts) T.weatherCounts[weatherName]++;
+  else if (T.weatherCounts) T.weatherCounts[weatherName] = 1;
+  if (safetyCar) T.scCount++;
+}
+
+/* =========================================================================
+   =========================== CORE GAME STATE =============================
+   ========================================================================= */
+
+function newCareer(p) {
+  seedRng();
+
+  const teams = TEAM_DB.map(t => ({
+    ...t,
+    budgetNow: Math.round(t.budget * (0.9 + rng() * 0.2)),
+    rdSkill: defaultRDSkillFor(t.prestige),
+    rdHistory: [],
+    simCharges: 0
+  }));
+
+  const drivers = AI_DRIVERS.map(d => ({
+    id: d.id, name: d.name, nat: d.nat, teamId: d.team,
+    ovr: d.ovr, age: d.age, isPlayer: false,
+    pts: 0, wins: 0, podiums: 0, poles: 0, dnf: 0
+  }));
+
+  const mates = drivers.filter(d => d.teamId === p.teamId);
+  const replaced = mates[mates.length - 1];
+  const idx = replaced ? drivers.indexOf(replaced) : -1;
+  if (idx >= 0) drivers.splice(idx, 1);
+
+  const player = {
+    id: 'PLAYER',
+    name: sanitizeName(p.first + ' ' + p.last, FULLNAME_MAX),
+    first: sanitizeName(p.first), last: sanitizeName(p.last),
+    nat: p.nat,
+    teamId: p.teamId,
+    age: p.age,
+    speed: p.speed, consistency: p.consistency, tyres: p.tyres,
+    speedFrac: 0, consFrac: 0, tyresFrac: 0,
+    ovr: computeOVR(p.speed, p.consistency, p.tyres),
+    isPlayer: true,
+    pts: 0, wins: 0, podiums: 0, poles: 0, dnf: 0,
+    contract: 2,
+    role: 'Pilota Titolare',
+    salary: 0
+  };
+  const insertAt = idx >= 0 ? idx : drivers.length;
+  drivers.splice(insertAt, 0, player);
+
+  const career = {
+    version: SAVE_VERSION,
+    rngState: RNG_STATE,
+    screen: 'hub',
+    tab: 'race',
+    year: 2026,
+    round: 0,
+    weather: null,
+    teams, drivers,
+    player,
+    grid: null,
+    lastRace: null,
+    rdOpen: false,
+    rdDone: 0,
+    budget: teams.find(t => t.id === p.teamId).budgetNow,
+    pendingBonus: 0,
+    rdLog: [],
+    seasonLog: [],
+    history: [],
+    hallOfFamePiloti: [],
+    hallOfFameCostruttori: [],
+    setupBonus: 0,
+    setupLabel: null,
+    playerStrategy: null,
+    strategyLabel: null,
+    lastSafetyCar: false,
+    sponsor: null,
+    sponsorOffers: generateSponsorOffers(),
+    sponsorHistory: [],
+    rookiePoolUsed: [],
+    totals: { seasons:0, races:0, wins:0, podiums:0, poles:0, titles:0, points:0, dnf:0 },
+    telemetry: defaultTelemetry(),
+    offers: null,
+    fired: false,
+    gameOver: false,
+    retired: false,
+    regulationPending: false,
+    regulationHistory: [],
+    regulationSnapshot: null,
+    lastRegulationInfo: null
+  };
+  career.rngState = RNG_STATE >>> 0;
+  return career;
+}
+
+function computeOVR(speed, cons, tyres) {
+  return Math.round(speed * 0.45 + cons * 0.3 + tyres * 0.25);
+}
+
+const teamById   = id => S.teams.find(t => t.id === id);
+const driverById = id => S.drivers.find(d => d.id === id);
+const playerTeam = () => teamById(S.player.teamId);
+const teammate   = () => S.drivers.find(d => d.teamId === S.player.teamId && !d.isPlayer);
+
+/* =========================================================================
+   =============================== ECONOMY =================================
+   ========================================================================= */
+
+function rdOverCapMultiplier(budgetNow) {
+  if (typeof budgetNow !== 'number' || budgetNow <= BUDGET_CAP) return 1;
+  const overRatio = (budgetNow - BUDGET_CAP) / BUDGET_CAP;
+  return 1 + (RD_OVER_CAP_MAX_MULT - 1) * Math.min(1, overRatio);
+}
+
+function applyLuxuryTax(rawBudget) {
+  if (rawBudget <= BUDGET_CAP) return rawBudget;
+  const excess = rawBudget - BUDGET_CAP;
+  return BUDGET_CAP + excess * (1 - LUXURY_TAX_RATE);
+}
+
+function computeSeasonBudgetForTeam(team, standingPos, numTeams) {
+  const base = team.budget;
+  const posRatio = numTeams > 1 ? 1 - standingPos / (numTeams - 1) : 1;
+  const posBonus = 0.7 + 0.7 * Math.pow(Math.max(0, posRatio), 0.8);
+  const prestigeFactor = 0.9 + ((team.prestige || 70) - 65) * 0.006;
+  const noise = rnd(0.92, 1.08);
+
+  const raw = Math.max(55, base * posBonus * prestigeFactor * noise);
+  const taxed = applyLuxuryTax(raw);
+  return Math.round(taxed);
+}
+
+function updateTeamBudgetsForNextSeason(tStandings) {
+  const numTeams = tStandings.length;
+  tStandings.forEach((tStanding, i) => {
+    const team = teamById(tStanding.id);
+    if (!team) return;
+    team.budgetNow = computeSeasonBudgetForTeam(team, i, numTeams);
+  });
+}
+
+/* =========================================================================
+   ============================== R&D SYSTEM ===============================
+   ========================================================================= */
+
+function rdEffectiveCost(stratId, teamCar, budgetNow) {
+  const s = RD_STRATEGIES[stratId];
+  const carFactor = 1 + Math.max(0, teamCar - 65) * 0.02;
+  const capMult = rdOverCapMultiplier(budgetNow);
+  return Math.round(s.cost * carFactor * capMult);
+}
+
+function rdEffectiveFail(stratId, teamCar, teamRdSkill, pkgId, simCharges) {
+  const s = RD_STRATEGIES[stratId];
+  const pkg = rdPackageById(pkgId);
+  const carFactor = Math.max(0, teamCar - 70) * 0.008;
+  const skillFactor = (0.7 - (teamRdSkill || 0.6)) * 0.15;
+  const buff = (pkg.id !== 'sim' && (simCharges || 0) > 0) ? SIM_BUFF_FAIL_REDUCTION : 0;
+  return clamp(s.failChance + carFactor + skillFactor + pkg.failAdd - buff, 0.03, 0.65);
+}
+
+function rdEffectiveGain(stratId, teamCar, teamRdSkill, pkgId) {
+  const s = RD_STRATEGIES[stratId];
+  const pkg = rdPackageById(pkgId);
+  const carDiminish = clamp(1 - Math.max(0, teamCar - 65) * 0.012, 0.6, 1);
+  const skillMult = 0.85 + (teamRdSkill || 0.6) * 0.35;
+  return {
+    min: s.gainMin * carDiminish * skillMult * pkg.gainMult,
+    max: s.gainMax * carDiminish * skillMult * pkg.gainMult
+  };
+}
+
+function applyRD(team, stratId, pkgId, { budgetRef = null, logTarget = null, logSuffix = '' } = {}) {
+  const strat = RD_STRATEGIES[stratId];
+  const currentBudget = budgetRef ? budgetRef.value : (team.budgetNow || 0);
+  const actualCost = rdEffectiveCost(stratId, team.car, currentBudget);
+
+  if (currentBudget < actualCost) {
+    return { ok: false, reason: 'budget', cost: actualCost };
+  }
+
+  const gains = rdEffectiveGain(stratId, team.car, team.rdSkill, pkgId);
+  const failChance = rdEffectiveFail(stratId, team.car, team.rdSkill, pkgId, team.simCharges || 0);
+
+  if (budgetRef) budgetRef.value = Math.max(0, budgetRef.value - actualCost);
+  else team.budgetNow = Math.max(0, (team.budgetNow || 0) - actualCost);
+
+  if (pkgId === 'sim') team.simCharges = SIM_BUFF_CHARGES;
+  else if ((team.simCharges || 0) > 0) team.simCharges--;
+
+  const roll = rng();
+  let outcome, delta, text;
+  if (roll < failChance) {
+    outcome = 'fail';
+    delta = -round1(rnd(strat.failMag * 0.3, strat.failMag));
+    text = 'Problemi di correlazione: il pacchetto non rende come atteso.';
+  } else if (roll < failChance + 0.35) {
+    outcome = 'neutral';
+    delta = round1(rnd(0, gains.min));
+    text = 'Aggiornamento installato, guadagni minimi.';
+  } else {
+    outcome = 'good';
+    delta = round1(rnd(gains.min, gains.max));
+    text = 'Ottimo riscontro in pista: la monoposto migliora sensibilmente.';
+  }
+
+  if (pkgId === 'sim' && outcome === 'fail') {
+    delta = delta / 2;
+    text += ' I dati del simulatore hanno limitato i danni.';
+  }
+
+  const upperBound = (team.isSatellite && typeof team.maxCar === 'number') ? team.maxCar : 99;
+  team.car = round1(clamp(team.car + delta, team.minCar || 40, upperBound));
+
+  if (S.telemetry) {
+    S.telemetry.rdSpendTotal += actualCost;
+    if (outcome === 'good') S.telemetry.rdSuccessCount++;
+    else if (outcome === 'fail') S.telemetry.rdFailCount++;
+  }
+
+  const finalText = text + logSuffix;
+
+  if (logTarget === 'player') {
+    const pkg = RD_PACKAGES.find(p => p.id === pkgId);
+    if (pkg) {
+      S.rdLog.unshift({
+        year: S.year, round: S.round,
+        pkg: pkg.name, icon: pkg.icon,
+        strat: strat.name, outcome, delta, text: finalText
+      });
+      if (S.rdLog.length > RD_LOG_CAP) S.rdLog.length = RD_LOG_CAP;
+    }
+  } else if (logTarget === 'team') {
+    if (!team.rdHistory) team.rdHistory = [];
+    team.rdHistory.unshift({ year: S.year, round: S.round, delta, outcome, strat: strat.name });
+    if (team.rdHistory.length > 20) team.rdHistory.length = 20;
+  }
+
+  return { ok: true, outcome, delta, cost: actualCost, text: finalText, stratName: strat.name };
+}
+
+function executeRDAction(team, stratId, pkgId) {
+  const res = applyRD(team, stratId, pkgId, { logTarget: 'team' });
+  return res.ok
+    ? { outcome: res.outcome, delta: res.delta, cost: res.cost, stratName: res.stratName }
+    : { outcome: 'skip', delta: 0, cost: 0, stratName: RD_STRATEGIES[stratId].name };
+}
+
+function doRD(pkgId, stratId, silent) {
+  const team = playerTeam();
+  const budgetRef = { value: S.budget };
+  const logSuffix = silent ? ' (sviluppo automatico — sim rapida)' : '';
+  const res = applyRD(team, stratId, pkgId, { budgetRef, logTarget: 'player', logSuffix });
+
+  if (!res.ok) {
+    if (!silent) toast('💸 Budget insufficiente! (' + res.cost + ' M$ richiesti)', 'bad');
+    return false;
+  }
+  S.budget = budgetRef.value;
+
+  S.rdDone++;
+  if (S.rdDone >= 2) S.rdOpen = false;
+
+  save();
+  if (silent) return true;
+
+  render({ resetScroll: false });
+  const outcome = res.outcome;
+  toast(
+    (outcome === 'good' ? '✅ Sviluppo riuscito ' : outcome === 'neutral' ? '➖ Sviluppo neutro ' : '❌ Sviluppo fallito ') +
+    (res.delta >= 0 ? '+' : '') + res.delta + ' pt vettura (' + res.cost + ' M$)',
+    outcome === 'good' ? 'good' : outcome === 'neutral' ? 'neutral' : 'bad'
+  );
+  return true;
+}
+
+/* Auto-R&D per la simulazione rapida.
+   Strategia: se ha budget per un secondo sviluppo, il primo è il simulatore
+   (così sfrutta il buff −10% sul secondo); altrimenti punta diretto al guadagno. */
+function autoRD() {
+  let guard = 0;
+  while (S.rdOpen && S.rdDone < 2 && guard++ < 4) {
+    const team = playerTeam();
+    const consCost = rdEffectiveCost('cons', team.car, S.budget);
+    const balCost  = rdEffectiveCost('bal',  team.car, S.budget);
+    const aggCost  = rdEffectiveCost('agg',  team.car, S.budget);
+
+    let stratId = null;
+    if (S.budget >= aggCost * 1.2) stratId = 'agg';
+    else if (S.budget >= balCost) stratId = 'bal';
+    else if (S.budget >= consCost) stratId = 'cons';
+    if (!stratId) break;
+
+    const floor = team.minCar || 50;
+    let pkgId;
+
+    if (S.rdDone === 0 && (team.simCharges || 0) === 0 && S.budget >= balCost * 2) {
+      pkgId = 'sim';
+    } else if (S.budget < balCost * 1.6 || team.car <= floor + 6) {
+      pkgId = 'chass';
+    } else {
+      pkgId = (S.rdDone % 2 === 0) ? 'aero' : 'power';
+    }
+
+    const ok = doRD(pkgId, stratId, true);
+    if (!ok) break;
+  }
+
+  S.rdOpen = false;
+  S.rdDone = 0;
+}
+
+function chooseSponsor(id) {
+  const offer = (S.sponsorOffers || []).find(o => o.id === id);
+  if (!offer) return;
+  S.sponsor = { ...offer, progress: 0, completed: false, justCompleted: false };
+  S.sponsorOffers = null;
+  save();
+  render({ resetScroll: false });
+  toast('🤝 Contratto sponsor firmato: ' + offer.name, 'good');
+}
+
+/* =========================================================================
+   ==================== PLAYER PROGRESSION =================================
+   ========================================================================= */
+function calculatePlayerProgression(p, mate, pos, wonTitle) {
+  const seasonLog = S.seasonLog || [];
+  const seasonRaces = seasonLog.length || 1;
+  const seasonDnfs  = seasonLog.filter(l => l.dnf).length;
+  const dnfRate     = seasonDnfs / seasonRaces;
+
+  const aggressiveIds = new Set(['1stop_soft_hard','2stop_soft_med_soft','inter','wet']);
+  const aggressiveUse = seasonLog.filter(l => l.strat && aggressiveIds.has(l.strat)).length;
+  const aggRatio      = aggressiveUse / seasonRaces;
+
+  let speedDelta = 0;
+  const speedReasons = [];
+
+  if (wonTitle)         { speedDelta += 2.8; speedReasons.push(['Titolo Mondiale conquistato', '+2.8']); }
+  else if (pos <= 3)    { speedDelta += 1.6; speedReasons.push(['Podio nel campionato piloti', '+1.6']); }
+  else if (pos <= 8)    { speedDelta += 0.9; speedReasons.push(['Stagione di alto livello', '+0.9']); }
+  else if (pos <= 14)   { speedDelta += 0.4; speedReasons.push(['Stagione regolare nei punti', '+0.4']); }
+  else                  { speedDelta -= 0.3; speedReasons.push(['Gavetta difficile', '-0.3']); }
+
+  if (mate) {
+    const diff = p.pts - mate.pts;
+    let mult = 1;
+    if (mate.ovr < 75) mult = 0.5;
+    else if (mate.ovr < 80) mult = 0.75;
+    else if (mate.ovr >= 85) mult = 1.4;
+    else if (mate.ovr >= 80) mult = 1.1;
+
+    if (diff > 30)       { const v = round1(1.8 * mult); speedDelta += v; speedReasons.push(['Dominio sul compagno', '+' + v]); }
+    else if (diff > 0)   { const v = round1(1.0 * mult); speedDelta += v; speedReasons.push(['Compagno battuto', '+' + v]); }
+    else if (diff > -25) { speedDelta += 0.3; speedReasons.push(['Buona crescita di squadra', '+0.3']); }
+    else                 { speedDelta -= 0.4; speedReasons.push(['Confronto col compagno perso', '-0.4']); }
+  }
+
+  let consDelta = 0;
+  const consReasons = [];
+
+  if (dnfRate < 0.01)       { consDelta += 2.0;  consReasons.push(['Zero ritiri: affidabilità eccellente', '+2.0']); }
+  else if (dnfRate < 0.15)  { consDelta += 1.2;  consReasons.push(['Ritiri contenuti: buona regolarità', '+1.2']); }
+  else if (dnfRate < 0.30)  { consDelta += 0.2;  consReasons.push(['Regolarità nella media', '+0.2']); }
+  else if (dnfRate < 0.50)  { consDelta -= 0.8;  consReasons.push(['Troppi ritiri: costanza da rivedere', '-0.8']); }
+  else                      { consDelta -= 1.8;  consReasons.push(['Stagione piena di ritiri', '-1.8']); }
+
+  if (pos <= 10 && dnfRate < 0.10 && seasonRaces >= 10) {
+    consDelta += 0.6;
+    consReasons.push(['Alta percentuale di arrivi a punti', '+0.6']);
+  }
+
+  let tyreDelta = 0;
+  const tyreReasons = [];
+
+  if (aggRatio >= 0.55)      { tyreDelta += 1.0; tyreReasons.push(['Strategie aggressive gestite bene', '+1.0']); }
+  else if (aggRatio >= 0.30) { tyreDelta += 0.5; tyreReasons.push(['Uso strategico delle mescole', '+0.5']); }
+  else                       { tyreDelta += 0.2; tyreReasons.push(['Approccio conservativo ma pulito', '+0.2']); }
+
+  if (pos <= 10 && seasonRaces >= 10) {
+    tyreDelta += 0.4;
+    tyreReasons.push(['Costanza nelle gare finali', '+0.4']);
+  }
+
+  let resistance = 1;
+  if (p.ovr >= 75) {
+    const agePenalty = p.age >= 34 ? (p.age - 33) * 0.15 : 0;
+    resistance = 1 + (p.ovr - 75) * 0.10 + agePenalty;
+    const soften = v => (v > 0 ? v / resistance : v);
+    speedDelta = soften(speedDelta);
+    consDelta  = soften(consDelta);
+    tyreDelta  = soften(tyreDelta);
+  }
+
+  let ageMod = 0, ageLabel = null;
+  if (p.age <= 24)      { ageMod =  0.8; ageLabel = ['Spinta giovanile ed esordio', '+0.8']; }
+  else if (p.age <= 29) { ageMod =  0.4; ageLabel = ['Maturità agonistica', '+0.4']; }
+  else if (p.age <= 33) { ageMod = -0.1; ageLabel = ['Stabilità anagrafica', '-0.1']; }
+  else if (p.age <= 36) { ageMod = -1.0; ageLabel = ['Inizio declino fisico', '-1.0']; }
+  else if (p.age <= 39) { ageMod = -1.8; ageLabel = ['Fase calante di fine carriera', '-1.8']; }
+  else                  { ageMod = -3.0; ageLabel = ['Ultimo anno agonistico pesante', '-3.0']; }
+
+  speedDelta += ageMod;
+  consDelta  += ageMod * 0.6;
+  tyreDelta  += ageMod * 0.4;
+
+  const luck = round1(rnd(-0.2, 0.7));
+  speedDelta += luck;
+
+  const reasons = [];
+  reasons.push(...speedReasons);
+  reasons.push(...consReasons);
+  reasons.push(...tyreReasons);
+  if (resistance > 1) reasons.push(['Difficile migliorare ad alto livello', '×' + (1 / resistance).toFixed(2)]);
+  if (ageLabel) reasons.push(ageLabel);
+  reasons.push(['Fattore forma', (luck >= 0 ? '+' : '') + luck]);
+
+  return {
+    speedDelta: round1(speedDelta),
+    consDelta:  round1(consDelta),
+    tyreDelta:  round1(tyreDelta),
+    delta:      round1((speedDelta + consDelta + tyreDelta) / 3),
+    reasons
+  };
+}
+
+function applyAttr(current, frac, delta) {
+  const total = clamp(current + (frac || 0) + delta, 30, 99);
+  const value = Math.round(total);
+  return { value, frac: round3(total - value) };
+}
+
+function applyPlayerProgression(p, progression) {
+  const oldOVR = p.ovr;
+
+  const s = applyAttr(p.speed,       p.speedFrac, progression.speedDelta);
+  const c = applyAttr(p.consistency, p.consFrac,  progression.consDelta);
+  const t = applyAttr(p.tyres,       p.tyresFrac, progression.tyreDelta);
+
+  p.speed = s.value;       p.speedFrac = s.frac;
+  p.consistency = c.value; p.consFrac  = c.frac;
+  p.tyres = t.value;       p.tyresFrac = t.frac;
+
+  p.ovr = computeOVR(p.speed, p.consistency, p.tyres);
+  return { oldOVR, newOVR: p.ovr };
+}
+
+/* =========================================================================
+   ==================== TEAM PERFORMANCE EVOLUTION =========================
+   ========================================================================= */
+function updateTeamPerformance(tStandings) {
+  const numTeams = tStandings.length;
+
+  S.teams.forEach(t => {
+    const targetMin = t.minCar || 50;
+    const upperBound = (t.isSatellite && typeof t.maxCar === 'number') ? t.maxCar : 99;
+
+    const carFactor = clamp(1 - Math.max(0, t.car - 70) * 0.03, 0.4, 1);
+    const drift = rnd(-3.0, 3.5) * carFactor;
+    const anchorPull = (targetMin - t.car) * 0.07;
+
+    let rubberBand = 0;
+    if (!t.isSatellite) {
+      const standingPos = tStandings.findIndex(st => st.id === t.id);
+      if (standingPos >= 0) {
+        const normalizedRank = numTeams > 1 ? standingPos / (numTeams - 1) : 0;
+        if (normalizedRank > 0.4) {
+          const rubberStrength = (normalizedRank - 0.4) / 0.6;
+          rubberBand = rubberStrength * rnd(0.8, 2.4);
+          if (rng() < 0.15 * rubberStrength) rubberBand += rnd(1.0, 2.5);
+        }
+      }
+    }
+
+    let regression = 0;
+    if (t.car > 88 && !t.isSatellite) {
+      regression = -(t.car - 88) * 0.20;
+    }
+
+    t.car = round1(clamp(t.car + drift + anchorPull + rubberBand + regression, targetMin, upperBound));
+  });
+}
+
+/* =========================================================================
+   ========================= AI R&D ========================================
+   ========================================================================= */
+function processAIRDActivity(tStandings, light) {
+  const numTeams = tStandings.length;
+
+  S.teams.forEach(team => {
+    if (team.id === S.player.teamId) return;
+
+    const standingPos = tStandings.findIndex(st => st.id === team.id);
+    const normRank = numTeams > 1 ? standingPos / (numTeams - 1) : 0;
+
+    let actions = 0;
+    if (light) {
+      actions = rng() < 0.5 ? 1 : 0;
+    } else {
+      if (team.budgetNow >= 90)       actions = 2 + (rng() < 0.4 ? 1 : 0);
+      else if (team.budgetNow >= 60)  actions = 1 + (rng() < 0.6 ? 1 : 0);
+      else if (team.budgetNow >= 35)  actions = 1;
+      else                            actions = rng() < 0.5 ? 1 : 0;
+
+      if (team.car >= 88 && normRank < 0.25) actions = Math.max(1, actions - 1);
+      if (normRank > 0.7) actions += 1;
+    }
+
+    for (let i = 0; i < actions; i++) {
+      let stratId;
+      const r = rng();
+
+      if (normRank > 0.7 && team.budgetNow >= 50) {
+        stratId = r < 0.55 ? 'agg' : 'bal';
+      } else if (normRank < 0.25 && team.car > 86) {
+        stratId = r < 0.7 ? 'cons' : 'bal';
+      } else if (team.budgetNow >= 50) {
+        stratId = r < 0.4 ? 'bal' : r < 0.7 ? 'agg' : 'cons';
+      } else if (team.budgetNow >= 25) {
+        stratId = r < 0.6 ? 'cons' : 'bal';
+      } else {
+        stratId = 'cons';
+      }
+
+      const cost = rdEffectiveCost(stratId, team.car, team.budgetNow);
+      if (team.budgetNow < cost) continue;
+
+      const balCost = rdEffectiveCost('bal', team.car, team.budgetNow);
+      let pkgId;
+      if (i === 0 && actions >= 2 && rng() < 0.25) {
+        pkgId = 'sim';
+      } else if (team.car <= (team.minCar || 50) + 5 || team.budgetNow < balCost * 1.6) {
+        pkgId = 'chass';
+      } else {
+        pkgId = rng() < 0.5 ? 'aero' : 'power';
+      }
+
+      executeRDAction(team, stratId, pkgId);
+    }
+  });
+}
+
+/* =========================================================================
+   ==================== AI EVOLUTION / TRANSFERS ===========================
+   ========================================================================= */
+function processAIEvolutionAndRetirements() {
+  const survivingDrivers = [];
+
+  S.drivers.forEach(d => {
+    if (d.isPlayer) { d.age++; survivingDrivers.push(d); return; }
+
+    d.age++;
+    if (d.age >= RETIRE_AGE) {
+      if (S.telemetry) S.telemetry.retirementsCount++;
+      const newRookie = generateRandomRookie(d.teamId);
+      survivingDrivers.push(newRookie);
+    } else {
+      let driverDelta = 0;
+      if (d.age <= 24 && d.ovr >= 87)     driverDelta = rnd(-0.2, 0.8);
+      else if (d.age <= 24)               driverDelta = rnd(0.8, 2.5);
+      else if (d.age <= 32)               driverDelta = rnd(-0.3, 0.9);
+      else                                driverDelta = rnd(-1.2, 0.2);
+
+      d.ovr = Math.round(clamp(d.ovr + driverDelta, 62, 97));
+      survivingDrivers.push(d);
+    }
+  });
+
+  S.drivers = survivingDrivers;
+}
+
+function processAITransfers() {
+  const aiDrivers = S.drivers.filter(d => !d.isPlayer);
+  let transfersCount = 0;
+  const maxTransfers = irnd(3, 4);
+
+  const moved = new Set();
+
+  aiDrivers.forEach(d => {
+    if (moved.has(d.id)) return;
+    if (transfersCount >= maxTransfers) return;
+
+    const currentTeam = teamById(d.teamId);
+    if (!currentTeam) return;
+    const strandedInFallenTopTeam = d.ovr >= 84 && currentTeam.car < 78;
+    const strandedInWeakTeam      = d.ovr >= 83 && currentTeam.car < 75;
+
+    const wantsMove = (strandedInFallenTopTeam && rng() < 0.65)
+                   || (!strandedInFallenTopTeam && strandedInWeakTeam && rng() < 0.5);
+
+    if (wantsMove) {
+      const topTeams = S.teams.filter(t => t.car >= 84 && t.id !== d.teamId);
+      if (topTeams.length > 0) {
+        const targetTeam = topTeams[Math.floor(rng() * topTeams.length)];
+        const targetTeamDrivers = aiDrivers.filter(td => td.teamId === targetTeam.id && !moved.has(td.id));
+        if (targetTeamDrivers.length > 0) {
+          const weakestTarget = targetTeamDrivers.slice().sort((a, b) => a.ovr - b.ovr)[0];
+          if (weakestTarget && d.ovr > weakestTarget.ovr) {
+            moved.add(d.id);
+            moved.add(weakestTarget.id);
+            const tempTeam = d.teamId;
+            d.teamId = targetTeam.id;
+            weakestTarget.teamId = tempTeam;
+            transfersCount++;
+          }
+        }
+      }
+    }
+  });
+
+  if (S.telemetry) S.telemetry.transfersCount += transfersCount;
+}
+
+function generateRandomRookie(teamId) {
+  const baseRookieOvr = irnd(74, 80);
+
+  if (!S.rookiePoolUsed) S.rookiePoolUsed = [];
+
+  const availableIdx = F2_ROOKIE_POOL
+    .map((_, idx) => idx)
+    .filter(idx => !S.rookiePoolUsed.includes(idx));
+
+  let name, nat;
+  if (availableIdx.length > 0) {
+    const pick = availableIdx[Math.floor(rng() * availableIdx.length)];
+    S.rookiePoolUsed.push(pick);
+    name = F2_ROOKIE_POOL[pick].name;
+    nat  = F2_ROOKIE_POOL[pick].nat;
+  } else {
+    const fName = RANDOM_NAMES_FIRST[Math.floor(rng() * RANDOM_NAMES_FIRST.length)];
+    const lName = RANDOM_NAMES_LAST[Math.floor(rng() * RANDOM_NAMES_LAST.length)];
+    const natPair = NATIONS[Math.floor(rng() * NATIONS.length)];
+    name = fName + ' ' + lName;
+    nat  = natPair[0];
+  }
+
+  return {
+    id: 'rookie_' + rng().toString(36).substring(2, 7),
+    name: sanitizeName(name, FULLNAME_MAX),
+    nat: nat,
+    teamId: teamId,
+    ovr: baseRookieOvr,
+    age: irnd(18, 22),
+    isPlayer: false,
+    pts: 0, wins: 0, podiums: 0, poles: 0, dnf: 0
+  };
+}
+
+/* =========================================================================
+   ============================ SEASON RECORD ==============================
+   ========================================================================= */
+function recordSeasonAndHallOfFame(standings, tStandings, pos, wonTitle, mate, progressionResult) {
+  const p = S.player;
+  const champion = standings[0];
+  const championTeam = teamById(champion.teamId);
+  const constructorChamp = tStandings[0];
+  const constructorColor = safeColor(teamById(constructorChamp.id)?.color);
+
+  S.hallOfFamePiloti.push({
+    year: S.year, driverName: champion.name, driverNat: champion.nat,
+    teamName: championTeam?.name || '—', teamColor: safeColor(championTeam?.color),
+    playerWon: wonTitle
+  });
+  if (S.hallOfFamePiloti.length > HOF_CAP) {
+    S.hallOfFamePiloti = S.hallOfFamePiloti.slice(-HOF_CAP);
+  }
+
+  S.hallOfFameCostruttori.push({
+    year: S.year, teamName: constructorChamp.name, teamColor: constructorColor,
+    playerTeamWon: constructorChamp.id === p.teamId
+  });
+  if (S.hallOfFameCostruttori.length > HOF_CAP) {
+    S.hallOfFameCostruttori = S.hallOfFameCostruttori.slice(-HOF_CAP);
+  }
+
+  S.history.push({
+    year: S.year,
+    team: playerTeam()?.name || '—',
+    teamColor: safeColor(playerTeam()?.color),
+    pos, points: p.pts, wins: p.wins, podiums: p.podiums, poles: p.poles, dnf: p.dnf,
+    ovrStart: progressionResult.oldOVR, ovrEnd: progressionResult.newOVR,
+    title: wonTitle, matePts: mate ? mate.pts : 0, mateName: mate ? mate.name : '—',
+    champion: champion.name
+  });
+  if (S.history.length > HISTORY_CAP) {
+    S.history = S.history.slice(-HISTORY_CAP);
+  }
+
+  S.totals.seasons++;
+  if (wonTitle) S.totals.titles++;
+
+  trackSeasonTelemetry(standings, tStandings);
+}
+
+/* =========================================================================
+   ============================ SEASON FLOW ================================
+   ========================================================================= */
+function resolveSeasonCareerState(pos) {
+  const p = S.player;
+  p.contract--;
+  S.fired = p.ovr < OVR_FIRE;
+  if (S.fired) p.contract = 0;
+
+  if (p.age >= RETIRE_AGE) {
+    S.retired = true;
+    S.screen = 'retire';
+    return;
+  }
+
+  if (p.contract <= 0) {
+    S.offers = generateOffers(pos);
+    if (S.offers.length === 0) {
+      S.gameOver = true;
+      S.screen = 'gameover';
+      return;
+    }
+    S.screen = 'market';
+  } else {
+    S.screen = 'progress';
+  }
+}
+
+function endSeason() {
+  const p = S.player;
+  const standings = driverStandings();
+  const pos = standings.findIndex(d => d.isPlayer) + 1;
+  const mate = teammate();
+  const champion = standings[0];
+  const wonTitle = champion?.isPlayer === true;
+
+  if (!champion) {
+    S.gameOver = true;
+    S.screen = 'gameover';
+    save(); render();
+    return;
+  }
+
+  if (S.sponsor && !S.sponsor.completed && S.sponsor.type === 'title' && wonTitle) {
+    S.sponsor.completed = true;
+    S.pendingBonus = (S.pendingBonus || 0) + S.sponsor.reward;
+    toast('💰 Sponsor: obiettivo Mondiale raggiunto! +' + S.sponsor.reward + ' M$ nel budget della prossima stagione', 'good');
+  }
+
+  const tStandings = teamStandings();
+  const progression = calculatePlayerProgression(p, mate, pos, wonTitle);
+  const progressionResult = applyPlayerProgression(p, progression);
+
+  recordSeasonAndHallOfFame(standings, tStandings, pos, wonTitle, mate, progressionResult);
+  processAIEvolutionAndRetirements();
+  processAITransfers();
+
+  processAIRDActivity(tStandings, false);
+
+  updateTeamBudgetsForNextSeason(tStandings);
+
+  updateTeamPerformance(tStandings);
+
+  S.progression = {
+    delta: progression.delta,
+    speedDelta: progression.speedDelta,
+    consDelta:  progression.consDelta,
+    tyreDelta:  progression.tyreDelta,
+    reasons: progression.reasons,
+    oldOVR: progressionResult.oldOVR,
+    newOVR: progressionResult.newOVR,
+    pos, wonTitle
+  };
+
+  resolveSeasonCareerState(pos);
+  save();
+  render();
+}
+
+/* =========================================================================
+   ============================== MARKET ===================================
+   ========================================================================= */
+function generateOffers(lastSeasonPos) {
+  const p = S.player;
+  const offers = [];
+
+  S.teams.forEach(t => {
+    if (S.fired && t.id === p.teamId) return;
+
+    const isTopTeam = t.car >= 84;
+
+    let gap = p.ovr - (t.prestige * 0.4 + t.car * 0.3);
+    let interest = gap + rnd(0, 8);
+
+    if (isTopTeam) {
+      if (p.ovr >= 82) interest += (p.ovr - 80) * 3;
+      else             interest -= 15;
+    }
+
+    if (t.id === p.teamId) interest += 12;
+    interest += S.totals.titles * 8;
+
+    if (interest > -12) {
+      const role   = interest > 12 ? 'Prima Guida' : interest > 4 ? 'Pilota Titolare' : 'Seconda Guida';
+      const years  = interest > 12 ? irnd(2, 3) : irnd(1, 2);
+      const salary = Math.round(clamp((p.ovr - 45) * 1.5 + t.prestige * 0.25 + interest * 0.6, 1, 75));
+      offers.push({ teamId: t.id, role, years, salary, interest: round1(interest) });
+    }
+  });
+
+  return offers.sort((a, b) => b.interest - a.interest).slice(0, 5);
+}
+
+function confirmAcceptOffer(offerIndex) {
+  if (!S || !S.offers) return;
+  const offer = S.offers[offerIndex];
+  if (!offer) return;
+  const t = teamById(offer.teamId);
+  const msg = 'Firmare con ' + t.name + '?\n\n'
+            + offer.role + ' • ' + offer.years + ' stagione/i • ' + offer.salary + ' M$/anno\n\n'
+            + 'L\'azione è definitiva.';
+  askConfirm(msg, () => acceptOffer(offer), { yes: 'Firma il contratto' });
+}
+
+function acceptOffer(offer) {
+  const p = S.player;
+  const oldTeam = p.teamId;
+  const newTeam = offer.teamId;
+
+  if (oldTeam !== newTeam) {
+    const targets = S.drivers.filter(d => d.teamId === newTeam && !d.isPlayer);
+    const weakest = targets.slice().sort((a, b) => a.ovr - b.ovr)[0];
+    if (weakest) weakest.teamId = oldTeam;
+    p.teamId = newTeam;
+  }
+
+  p.contract = offer.years;
+  p.salary = offer.salary;
+  p.role = offer.role;
+
+  S.regulationSnapshot = null;
+  S.regulationPending = false;
+
+  startNewSeason();
+}
+
+function startNewSeason() {
+  if (S.sponsor) {
+    if (!S.sponsorHistory) S.sponsorHistory = [];
+    S.sponsorHistory.unshift({
+      year: S.year,
+      name: S.sponsor.name,
+      completed: S.sponsor.completed,
+      reward: S.sponsor.completed ? S.sponsor.reward : 0
+    });
+    if (S.sponsorHistory.length > SPONSOR_HISTORY_CAP) {
+      S.sponsorHistory = S.sponsorHistory.slice(0, SPONSOR_HISTORY_CAP);
+    }
+  }
+
+  S.year++;
+  S.round = 0;
+  S.grid = null;
+  S.lastRace = null;
+  S.seasonLog = [];
+  S.weather = null;
+  S.rdOpen = true;
+  S.rdDone = 0;
+  S.offers = null;
+  S.fired = false;
+  S.setupBonus = 0;
+  S.setupLabel = null;
+  S.playerStrategy = null;
+  S.strategyLabel = null;
+  S.lastSafetyCar = false;
+  S.sponsor = null;
+  S.sponsorOffers = generateSponsorOffers();
+
+  S.regulationSnapshot = null;
+  S.teams.forEach(t => { t.simCharges = 0; });
+
+  const pt = playerTeam();
+
+  const carryOver = Math.min(S.budget * BUDGET_CARRYOVER_RATE, BUDGET_CARRYOVER_CAP);
+  const bonus = S.pendingBonus || 0;
+  S.pendingBonus = 0;
+  S.budget = Math.max(0, Math.round((pt.budgetNow || pt.budget) + irnd(-5, 15) + carryOver + bonus));
+
+  S.drivers.forEach(d => { d.pts = 0; d.wins = 0; d.podiums = 0; d.poles = 0; d.dnf = 0; });
+
+  if (S.year % REGULATION_PERIOD === 0) {
+    S.regulationPending = true;
+    S.regulationSnapshot = null;
+    applyRegulationCompression();
+    S.screen = 'regulations';
+    S.tab = 'race';
+    save(); render();
+    return;
+  }
+
+  S.screen = 'hub';
+  S.tab = 'race';
+  save(); render();
+}
+
+/* =========================================================================
+   ====================== REGOLAMENTO TECNICO ==============================
+   ========================================================================= */
+
+function applyRegulationCompression() {
+  S.regulationSnapshot = {};
+  S.teams.forEach(t => {
+    const oldCar = t.car;
+    const compressed = REGULATION_MEDIAN + (oldCar - REGULATION_MEDIAN) * REGULATION_COMPRESSION;
+    const noise = rnd(-REGULATION_NOISE, REGULATION_NOISE);
+    const upperBound = (t.isSatellite && typeof t.maxCar === 'number') ? t.maxCar : 99;
+
+    t.car = round1(clamp(compressed + noise, REG_FLOOR, upperBound));
+
+    if (t.minCar > t.car + 2) t.minCar = Math.max(45, t.car - 2);
+
+    S.regulationSnapshot[t.id] = { old: round1(oldCar), compressed: t.car };
+  });
+}
+
+function pickAIRegulationApproach(team) {
+  const b = team.budgetNow || 0;
+  const r = rng();
+
+  if (b < 30) {
+    if (r < 0.30) return 'scommessa';
+    return 'cons';
+  }
+
+  if (b >= 100) {
+    if (r < 0.50) return 'rev';
+    if (r < 0.92) return 'bal';
+    return 'cons';
+  }
+  if (b >= 60) {
+    if (r < 0.30) return 'rev';
+    if (r < 0.80) return 'bal';
+    return 'cons';
+  }
+  if (r < 0.12) return 'rev';
+  if (r < 0.40) return 'scommessa';
+  if (r < 0.80) return 'bal';
+  return 'cons';
+}
+
+function rollRegulationDelta(approachId, team) {
+  const strat = REGULATION_STRATEGIES[approachId];
+  let delta = rnd(strat.deltaMin, strat.deltaMax);
+  let flop = false;
+  if (approachId === 'rev' && team.car > REG_FLOP_CAR_THRESHOLD && rng() < REG_FLOP_CHANCE) {
+    delta -= rnd(4, 9);
+    flop = true;
+  }
+  return { delta, flop };
+}
+
+function processAIRegulationChoices() {
+  const summary = [];
+
+  S.teams.forEach(team => {
+    if (team.id === S.player.teamId) return;
+
+    let approachId = pickAIRegulationApproach(team);
+    let strat = REGULATION_STRATEGIES[approachId];
+
+    if ((team.budgetNow || 0) < strat.cost) {
+      approachId = 'cons';
+      strat = REGULATION_STRATEGIES.cons;
+    }
+    const actualCost = Math.min(strat.cost, team.budgetNow || 0);
+    team.budgetNow = Math.max(0, (team.budgetNow || 0) - actualCost);
+
+    const { delta, flop } = rollRegulationDelta(approachId, team);
+
+    const upperBound = (team.isSatellite && typeof team.maxCar === 'number') ? team.maxCar : 99;
+    team.car = round1(clamp(team.car + delta, REG_FLOOR, upperBound));
+
+    if (team.car < team.minCar) team.minCar = Math.max(45, team.car - 2);
+
+    if (!team.rdHistory) team.rdHistory = [];
+    team.rdHistory.unshift({
+      year: S.year, round: 0,
+      delta: round1(delta),
+      outcome: delta > 0.5 ? 'good' : delta < -0.5 ? 'fail' : 'neutral',
+      strat: '⚙️ Regolamento ' + strat.name,
+      regulation: true,
+      flop
+    });
+    if (team.rdHistory.length > 20) team.rdHistory.length = 20;
+
+    summary.push({
+      teamId: team.id,
+      teamName: team.name,
+      teamColor: safeColor(team.color),
+      approach: approachId,
+      approachName: strat.name,
+      cost: actualCost,
+      delta: round1(delta),
+      flop
+    });
+  });
+
+  return summary;
+}
+
+function applyPlayerRegulationChoice(approachId) {
+  if (!S || !S.regulationPending) return;
+  const strat = REGULATION_STRATEGIES[approachId];
+  if (!strat) return;
+
+  let actualCost = strat.cost;
+  if (S.budget < strat.cost) {
+    if (approachId === 'cons') {
+      actualCost = Math.min(strat.cost, S.budget);
+    } else {
+      toast('💸 Budget insufficiente per questo progetto', 'bad');
+      return;
+    }
+  }
+  S.budget = Math.max(0, S.budget - actualCost);
+
+  const team = playerTeam();
+  const { delta, flop } = rollRegulationDelta(approachId, team);
+  const upperBound = (team.isSatellite && typeof team.maxCar === 'number') ? team.maxCar : 99;
+  team.car = round1(clamp(team.car + delta, REG_FLOOR, upperBound));
+  if (team.car < team.minCar) team.minCar = Math.max(45, team.car - 2);
+
+  const aiSummary = processAIRegulationChoices();
+
+  if (!S.regulationHistory) S.regulationHistory = [];
+  S.regulationHistory.push({
+    year: S.year,
+    approach: approachId,
+    approachName: strat.name,
+    cost: actualCost,
+    delta: round1(delta),
+    flop,
+    aiSummary
+  });
+  if (S.regulationHistory.length > REG_HISTORY_CAP) {
+    S.regulationHistory = S.regulationHistory.slice(-REG_HISTORY_CAP);
+  }
+
+  S.lastRegulationInfo = {
+    year: S.year,
+    approachName: strat.name,
+    delta: round1(delta),
+    cost: actualCost,
+    flop,
+    aiSummary
+  };
+
+  S.regulationPending = false;
+  S.regulationSnapshot = null;
+
+  S.screen = 'hub';
+  S.tab = 'race';
+
+  save();
+  render();
+
+  toast(
+    (flop ? '💥 ' : delta >= 3 ? '✅ ' : delta >= 0 ? '➖ ' : '⚠️ ') +
+    'Regolamento: ' + strat.name + ' (' + (delta >= 0 ? '+' : '') + round1(delta) + ' pt)',
+    delta >= 3 ? 'good' : delta < 0 || flop ? 'bad' : 'neutral'
+  );
+}
+
+/* =========================================================================
+   =============================== UI / RENDER =============================
+   ========================================================================= */
+const app = document.getElementById('app');
+
+function toast(msg, kind) {
+  if (IO_SUSPENDED) return;
+  const t = document.getElementById('toast');
+  const b = document.getElementById('toastBox');
+  b.textContent = msg;
+  b.className = 'px-4 py-3 rounded-xl neon-soft text-sm font-semibold ' +
+    (kind === 'good' ? 'bg-emerald-600 text-white'
+    : kind === 'bad' ? 'bg-racing text-white'
+    : 'bg-carbon3 text-slate-100');
+  t.classList.remove('hidden');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.add('hidden'), 2600);
+}
+
+let _modalCleanup = null;
+
+function closeModal() {
+  if (_modalCleanup) {
+    const fn = _modalCleanup;
+    _modalCleanup = null;
+    fn();
+  }
+}
+
+function askConfirm(message, onYes, opts) {
+  opts = opts || {};
+  closeModal();
+  const prevFocus = document.activeElement;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'modalMsg');
+  overlay.innerHTML = `
+    <div class="anim w-full max-w-sm rounded-2xl bg-carbon2 neon-soft p-5">
+      <p id="modalMsg" class="text-sm text-slate-200 whitespace-pre-line">${esc(message)}</p>
+      <div class="flex gap-3 mt-5">
+        <button type="button" data-modal="no"  class="flex-1 py-3 rounded-xl bg-carbon3 text-slate-300 font-semibold">${esc(opts.no || 'Annulla')}</button>
+        <button type="button" data-modal="yes" class="flex-1 py-3 rounded-xl bg-racing neon font-black">${esc(opts.yes || 'Conferma')}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const yesBtn = overlay.querySelector('[data-modal="yes"]');
+  const noBtn  = overlay.querySelector('[data-modal="no"]');
+
+  const finish = (result) => {
+    closeModal();
+    if (!result) return;
+    try {
+      onYes();
+    } catch (e) {
+      console.error('Errore nell\'azione di conferma:', e);
+      try { toast('⚠️ Azione non completata: ' + (e && e.message ? e.message : 'errore'), 'bad'); } catch (_) {}
+    }
+  };
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); return; }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const items = [noBtn, yesBtn];
+      const idx = items.indexOf(document.activeElement);
+      let next;
+      if (idx === -1) next = e.shiftKey ? items.length - 1 : 0;
+      else next = (idx + (e.shiftKey ? -1 : 1) + items.length) % items.length;
+      items[next].focus();
+    }
+  };
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) { finish(false); return; }
+    const btn = e.target.closest('[data-modal]');
+    if (btn) finish(btn.dataset.modal === 'yes');
+  });
+  document.addEventListener('keydown', onKey, true);
+
+  _modalCleanup = () => {
+    document.removeEventListener('keydown', onKey, true);
+    overlay.remove();
+    if (prevFocus && document.contains(prevFocus) && typeof prevFocus.focus === 'function') {
+      try { prevFocus.focus({ preventScroll: true }); } catch (_) {}
+    }
+  };
+
+  (opts.danger ? noBtn : yesBtn).focus();
+}
+
+function bar(label, val, color) {
+  const w = clamp(Number(val) || 0, 0, 100);
+  return `
+  <div>
+    <div class="flex justify-between text-[11px] uppercase tracking-wider text-slate-400 mb-1">
+      <span>${label}</span><span class="text-slate-200 font-bold">${val}</span>
+    </div>
+    <div class="h-2 rounded-full bg-carbon3 overflow-hidden">
+      <div class="h-full rounded-full transition-all duration-500" style="width:${w}%;background:${safeColor(color)}"></div>
+    </div>
+  </div>`;
+}
+
+function header(title, sub) {
+  return `<div class="mb-4">
+    <h2 class="text-xl sm:text-2xl font-black tracking-tight">${title}</h2>
+    ${sub ? `<p class="text-sm text-slate-400 mt-0.5">${sub}</p>` : ''}
+  </div>`;
+}
+
+function teamBadge(t, extra) {
+  if (!t) return '';
+  return `<span class="inline-flex items-center gap-1.5 ${extra || ''}">
+    <span class="w-2.5 h-5 rounded-sm shrink-0" style="background:${safeColor(t.color)}"></span>
+    <span class="truncate">${esc(t.name)}</span>
+  </span>`;
+}
+
+function render({ resetScroll = true } = {}) {
+  if (IO_SUSPENDED) return;
+  if (resetScroll) window.scrollTo({ top: 0, behavior: 'auto' });
+  try {
+    switch (S ? S.screen : 'menu') {
+      case 'hub':         app.innerHTML = viewHub(); break;
+      case 'setup':       app.innerHTML = viewSetup(); break;
+      case 'quali':       app.innerHTML = viewQuali(); break;
+      case 'strategy':    app.innerHTML = viewStrategy(); break;
+      case 'race':        app.innerHTML = viewRace(); break;
+      case 'seasonEnd':   app.innerHTML = viewSeasonEnd(); break;
+      case 'progress':    app.innerHTML = viewProgress(); break;
+      case 'market':      app.innerHTML = viewMarket(); break;
+      case 'retire':      app.innerHTML = viewRetire(); break;
+      case 'gameover':    app.innerHTML = viewGameOver(); break;
+      case 'regulations': app.innerHTML = viewRegulations(); break;
+      default:            app.innerHTML = viewMenu();
+    }
+  } catch (e) {
+    console.error('Render error:', e);
+    app.innerHTML = `
+      <div class="anim min-h-[85vh] flex flex-col justify-center text-center">
+        <div class="text-5xl mb-3">⚠️</div>
+        <div class="text-[11px] uppercase tracking-[0.3em] text-racing">Errore di rendering</div>
+        <h2 class="text-2xl font-black mt-1">Qualcosa è andato storto</h2>
+        <p class="text-sm text-slate-400 mt-3 max-w-md mx-auto break-words">
+          ${esc(e && e.message ? e.message : 'Errore sconosciuto')}
+        </p>
+        <button type="button" data-action="render-retry-hub"
+          class="mt-6 px-6 py-3 rounded-2xl bg-racing neon font-black active:scale-[.98] transition">
+          ← Torna all'Hub
+        </button>
+        <button type="button" data-action="render-retry-menu"
+          class="mt-3 px-6 py-3 rounded-2xl bg-carbon2 neon-soft text-slate-400 text-sm">
+          Menu principale
+        </button>
+      </div>`;
+  }
+}
+
+function viewMenu() {
+  if (HAS_SAVE_CACHE === null) HAS_SAVE_CACHE = detectSave();
+  const hasSave = HAS_SAVE_CACHE;
+  const debugEnabled = new URLSearchParams(location.search).has('debug');
+
+  return `
+  <div class="anim min-h-[85vh] flex flex-col justify-center">
+    <div class="text-center mb-10">
+      <div class="inline-block px-3 py-1 rounded-full bg-racing/20 text-racing text-[11px] font-bold tracking-[0.3em] mb-4">SEASON 2026</div>
+      <h1 class="text-5xl sm:text-7xl font-black tracking-tighter leading-none">
+        <span class="text-racing">F1</span> CAREER
+      </h1>
+      <p class="text-slate-400 mt-3 text-sm sm:text-base">Simulatore di carriera bilanciato. Guadagnati la vetta.</p>
+      <div class="mt-6 h-1 w-32 mx-auto rounded-full bg-gradient-to-r from-transparent via-racing to-transparent pulse-glow"></div>
+    </div>
+
+    <div class="space-y-3 max-w-md w-full mx-auto">
+      ${hasSave ? `
+      <button type="button" aria-label="Continua la carriera salvata" data-action="career-continue" class="w-full py-5 rounded-2xl bg-carbon2 neon-soft font-bold text-lg hover:bg-carbon3 active:scale-[.98] transition">
+        ▶ CONTINUA CARRIERA
+      </button>` : ''}
+      <button type="button" aria-label="Nuova carriera" data-action="career-new" class="w-full py-5 rounded-2xl bg-racing neon font-black text-lg hover:brightness-110 active:scale-[.98] transition">
+        🏁 NUOVA CARRIERA
+      </button>
+      ${hasSave ? `
+      <button type="button" aria-label="Elimina il salvataggio" data-action="career-wipe"
+        class="w-full py-3 rounded-2xl bg-transparent border border-slate-700 text-slate-400 text-sm hover:bg-carbon2 transition">
+        Elimina salvataggio
+      </button>` : ''}
+      ${debugEnabled ? `
+      <a href="?test=1" class="block text-center w-full py-3 rounded-2xl bg-carbon2 border border-slate-700 text-slate-400 text-xs hover:bg-carbon3 transition">
+        🧪 Esegui test suite
+      </a>` : ''}
+    </div>
+
+    <p class="text-center text-[11px] text-slate-500 mt-10">Salvataggio automatico locale</p>
+  </div>`;
+}
+
+function continueCareer() {
+  S = load();
+  if (!S) { toast('Salvataggio assente o corrotto', 'bad'); return; }
+
+  RNG_STATE = S.rngState >>> 0;
+  if (!S.sponsor && (!S.sponsorOffers || !S.sponsorOffers.length) && S.round < CALENDAR.length) {
+    S.sponsorOffers = generateSponsorOffers();
+  }
+
+  save();
+  render();
+}
+
+let draft = null;
+
+function renderCreate() { app.innerHTML = viewCreate(); }
+
+function openCreate() {
+  draft = {
+    first: '', last: '', nat: '🇮🇹', age: 19,
+    speed: 55, consistency: 55, tyres: 55, teamId: null,
+    step: 1
+  };
+  renderCreate();
+}
+
+function viewCreate() {
+  const d = draft;
+  const pool = ATTR_POOL;
+  const used = d.speed + d.consistency + d.tyres;
+  const left = pool - used;
+
+  if (d.step === 1) {
+    return `
+    <div class="anim">
+      ${header('Crea il tuo pilota', 'Passo 1 di 3 — Anagrafica')}
+
+      <div class="bg-carbon2 rounded-2xl p-4 sm:p-6 neon-soft space-y-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label for="fFirst" class="block text-[11px] uppercase tracking-wider text-slate-400 mb-1.5">Nome</label>
+            <input id="fFirst" value="${esc(d.first)}" maxlength="14" placeholder="Marco"
+              class="w-full px-4 py-3 rounded-xl bg-carbon3 border border-slate-700 focus:border-racing outline-none transition">
+          </div>
+          <div>
+            <label for="fLast" class="block text-[11px] uppercase tracking-wider text-slate-400 mb-1.5">Cognome</label>
+            <input id="fLast" value="${esc(d.last)}" maxlength="16" placeholder="Rossi"
+              class="w-full px-4 py-3 rounded-xl bg-carbon3 border border-slate-700 focus:border-racing outline-none transition">
+          </div>
+        </div>
+
+        <div>
+          <label for="fNat" class="block text-[11px] uppercase tracking-wider text-slate-400 mb-1.5">Nazionalità</label>
+          <select id="fNat" class="w-full px-4 py-3 rounded-xl bg-carbon3 border border-slate-700 focus:border-racing outline-none transition">
+            ${NATIONS.map(n => `<option value="${esc(n[0])}" ${d.nat === n[0] ? 'selected' : ''}>${esc(n[0])}${esc(n[1])}</option>`).join('')}
+          </select>
+        </div>
+
+        <div>
+          <label for="fAge" class="block text-[11px] uppercase tracking-wider text-slate-400 mb-1.5">
+            Età esordio: <span class="text-racing font-bold" id="ageLbl">${d.age}</span> anni
+          </label>
+          <input id="fAge" type="range" min="18" max="22" value="${d.age}" class="w-full"
+            aria-label="Età di esordio" aria-valuemin="18" aria-valuemax="22" aria-valuenow="${d.age}"
+            data-action-input="age-slider">
+        </div>
+      </div>
+
+      <div class="flex gap-3 mt-5">
+        <button type="button" aria-label="Torna al menu" data-action="menu-back" class="px-5 py-4 rounded-2xl bg-carbon2 neon-soft text-slate-300 font-semibold">← Indietro</button>
+        <button type="button" data-action="create-step1" class="flex-1 py-4 rounded-2xl bg-racing neon font-black hover:brightness-110 active:scale-[.98] transition">AVANTI →</button>
+      </div>
+    </div>`;
+  }
+
+  if (d.step === 2) {
+    return `
+    <div class="anim">
+      ${header('Attributi iniziali', 'Passo 2 di 3 — Distribuisci ' + pool + ' punti')}
+
+      <div class="bg-carbon2 rounded-2xl p-4 sm:p-6 neon-soft space-y-5">
+        <div class="flex items-center justify-between p-3 rounded-xl ${left < 0 ? 'bg-racing/20' : 'bg-carbon3'}">
+          <span class="text-sm font-semibold">Punti rimanenti</span>
+          <span id="pointsLeft" class="text-2xl font-black ${left < 0 ? 'text-racing' : left === 0 ? 'text-emerald-400' : 'text-gold'}">${left}</span>
+        </div>
+
+        ${attrSlider('speed', 'Velocità', 'Decisiva in qualifica e sul giro secco', '#e10600', d.speed)}
+        ${attrSlider('consistency', 'Costanza', 'Riduce gli errori e le gare storte in GP', '#0090ff', d.consistency)}
+        ${attrSlider('tyres', 'Gestione Gomme', 'Contiene il degrado nelle strategie aggressive', '#00594f', d.tyres)}
+
+        <div class="p-4 rounded-xl bg-carbon3 flex items-center justify-between">
+          <span class="text-[11px] uppercase tracking-wider text-slate-400">Overall stimato</span>
+          <span class="text-3xl font-black text-white" id="ovrPrev">${computeOVR(d.speed, d.consistency, d.tyres)}</span>
+        </div>
+      </div>
+
+      <div class="flex gap-3 mt-5">
+        <button type="button" data-action="create-back1" class="px-5 py-4 rounded-2xl bg-carbon2 neon-soft text-slate-300 font-semibold">←</button>
+        <button type="button" data-action="create-step2" class="flex-1 py-4 rounded-2xl bg-racing neon font-black hover:brightness-110 active:scale-[.98] transition">SCEGLI SCUDERIA →</button>
+      </div>
+    </div>`;
+  }
+
+  const lowTeams = TEAM_DB.filter(t => t.low);
+  return `
+  <div class="anim">
+    ${header('Scegli la scuderia', 'Passo 3 di 3 — Team d\'esordio')}
+
+    <div class="grid gap-3 sm:grid-cols-2">
+      ${lowTeams.map(t => `
+        <button type="button" data-action="create-team" data-team-id="${esc(t.id)}"
+          class="text-left p-4 rounded-2xl bg-carbon2 neon-soft border-2 transition active:scale-[.98] ${draft.teamId === t.id ? 'border-racing' : 'border-transparent hover:border-slate-700'}">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-3 h-10 rounded-sm" style="background:${safeColor(t.color)}"></div>
+            <div class="min-w-0">
+              <div class="font-black text-lg leading-tight">${esc(t.name)}</div>
+              <div class="text-[11px] text-slate-400">Budget ${t.budget} M$</div>
+            </div>
+          </div>
+          <div class="space-y-2.5">
+            ${bar('Monoposto', Math.round(t.car), t.color)}${bar('Prestigio', t.prestige, '#64748b')}
+          </div>
+        </button>`).join('')}
+    </div>
+
+    <div class="flex gap-3 mt-5">
+      <button type="button" data-action="create-back2" class="px-5 py-4 rounded-2xl bg-carbon2 neon-soft text-slate-300 font-semibold">←</button>
+      <button type="button" data-action="create-finish" ${draft.teamId ? '' : 'disabled'}
+        class="flex-1 py-4 rounded-2xl font-black transition active:scale-[.98] ${draft.teamId ? 'bg-racing neon hover:brightness-110' : 'bg-carbon3 text-slate-600 cursor-not-allowed'}">
+        🏁 INIZIA LA CARRIERA
+      </button>
+    </div>
+  </div>`;
+}
+
+function attrSlider(key, label, desc, color, val) {
+  return `
+  <div>
+    <div class="flex justify-between items-baseline mb-1">
+      <div>
+        <span class="font-bold text-sm">${label}</span>
+        <span class="block text-[11px] text-slate-500">${desc}</span>
+      </div>
+      <span class="text-2xl font-black" style="color:${safeColor(color)}" id="v_${key}">${val}</span>
+    </div>
+    <input type="range" min="30" max="80" value="${val}" class="w-full"
+      aria-label="${esc(label)}"
+      data-action-input="attr-slider" data-attr-key="${esc(key)}">
+  </div>`;
+}
+
+function createStep1() {
+  const f = document.getElementById('fFirst').value.trim();
+  const l = document.getElementById('fLast').value.trim();
+  if (!f || !l) { toast('Inserisci nome e cognome', 'bad'); return; }
+  draft.first = sanitizeName(f);
+  draft.last = sanitizeName(l);
+  if (!draft.first || !draft.last) { toast('Nome o cognome non validi', 'bad'); return; }
+  draft.nat = document.getElementById('fNat').value;
+  draft.age = +document.getElementById('fAge').value;
+  draft.step = 2;
+  renderCreate();
+}
+
+function createStep2() {
+  const used = draft.speed + draft.consistency + draft.tyres;
+  if (used > ATTR_POOL) { toast('Hai superato i punti disponibili', 'bad'); return; }
+  draft.step = 3;
+  renderCreate();
+}
+
+function createFinish() {
+  if (!draft.teamId) return;
+  S = newCareer(draft);
+  S.rdOpen = true;
+  save();
+  render();
+  toast('Benvenuto in F1, ' + S.player.last + '!', 'good');
+}
+
+function viewHub() {
+  const p = S.player, t = playerTeam();
+  const tabs = [
+    ['race',  '🏁 Gara'],
+    ['stand', '📊 Classifiche'],
+    ['rd',    '🔧 R&D'],
+    ['career','🏆 Carriera']
+  ];
+  const pPos = playerPos();
+
+  return `
+  <div class="anim">
+    <div class="rounded-2xl bg-carbon2 neon-soft overflow-hidden mb-4">
+      <div class="h-1.5" style="background:linear-gradient(90deg,${safeColor(t.color)},transparent)"></div>
+      <div class="p-4 flex items-center gap-4">
+        <div class="text-4xl sm:text-5xl">${esc(p.nat)}</div>
+        <div class="flex-1 min-w-0">
+          <div class="font-black text-lg sm:text-xl leading-tight truncate">${esc(p.name)}</div>
+          <div class="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
+            ${teamBadge(t)} <span class="text-slate-600">•</span> ${p.age} anni
+            ${p.role ? `<span class="text-slate-600">•</span> <span class="text-slate-300">${esc(p.role)}</span>` : ''}
+          </div>
+        </div>
+        <div class="text-center shrink-0">
+          <div class="text-[10px] uppercase tracking-widest text-slate-500">OVR</div>
+          <div class="text-3xl sm:text-4xl font-black ${p.ovr >= 85 ? 'text-gold' : p.ovr < OVR_FIRE + 6 ? 'text-racing' : 'text-white'}">${p.ovr}</div>
+        </div>
+      </div>
+      <div class="px-4 pb-4 grid grid-cols-3 gap-3">
+        ${bar('VEL', p.speed, '#e10600')}
+        ${bar('COS', p.consistency, '#0090ff')}
+        ${bar('GOM', p.tyres, '#00594f')}
+      </div>
+      <div class="px-4 pb-4 grid grid-cols-4 gap-2 text-center">
+        ${miniStat('Stagione', S.year)}
+        ${miniStat('Punti', p.pts)}
+        ${miniStat('Pos.', pPos)}
+        ${miniStat('Contratto', p.contract + 'a')}
+      </div>
+    </div>
+
+    <div class="grid grid-cols-4 gap-2 mb-4 sticky top-2 z-20" role="tablist" aria-label="Sezioni carriera" data-tablist>
+      ${tabs.map(([id, lbl]) => `
+        <button type="button" role="tab" id="tab-${id}" aria-selected="${S.tab === id}"
+          tabindex="${S.tab === id ? 0 : -1}"
+          data-action="hub-tab" data-tab="${id}"
+          class="tabbtn ${S.tab === id ? 'active' : 'bg-carbon2 text-slate-400'} py-3 rounded-xl text-[11px] sm:text-sm font-bold transition neon-soft">
+          ${lbl}
+        </button>`).join('')}
+    </div>
+
+    <div>${ S.tab === 'race'   ? tabRace()
+             : S.tab === 'stand'? tabStandings()
+             : S.tab === 'rd'   ? tabRD()
+             : tabCareer() }</div>
+  </div>`;
+}
+
+function miniStat(l, v) {
+  return `<div class="bg-carbon3 rounded-xl py-2">
+    <div class="text-[9px] uppercase tracking-wider text-slate-400">${l}</div>
+    <div class="font-black text-sm">${v}</div>
+  </div>`;
+}
+
+function tabRace() {
+  const done = S.round >= CALENDAR.length;
+
+  if (done) {
+    return `
+    <div class="anim bg-carbon2 rounded-2xl p-6 neon-soft text-center">
+      <div class="text-5xl mb-3">🏁</div>
+      <h3 class="text-xl font-black">Stagione ${S.year} conclusa</h3>
+      <p class="text-slate-400 text-sm mt-1">È il momento di tirare le somme.</p>
+      <button type="button" aria-label="Vedi il bilancio di stagione" data-action="season-end"
+        class="mt-5 w-full py-4 rounded-2xl bg-racing neon font-black active:scale-[.98] transition">
+        VEDI IL BILANCIO DI STAGIONE →
+      </button>
+    </div>
+  `;
+  }
+
+  const r = CALENDAR[S.round];
+  const blocked = S.rdOpen;
+
+  return `
+  <div class="anim space-y-4">
+    ${S.lastRegulationInfo ? `
+    <div class="bg-gold/10 border border-gold/40 rounded-2xl p-4">
+      <div class="text-[11px] uppercase tracking-wider text-gold font-bold mb-1">⚙️ Nuovo Regolamento Tecnico — Anno ${S.lastRegulationInfo.year}</div>
+      <div class="text-sm text-slate-200">Progetto scelto: <b class="text-white">${esc(S.lastRegulationInfo.approachName)}</b></div>
+      <div class="text-sm mt-0.5 ${S.lastRegulationInfo.delta >= 0 ? 'text-emerald-400' : 'text-racing'}">
+        Effetto vettura: <b>${S.lastRegulationInfo.delta >= 0 ? '+' : ''}${S.lastRegulationInfo.delta} pt</b>
+        <span class="text-slate-500">(costo ${S.lastRegulationInfo.cost} M$)</span>
+        ${S.lastRegulationInfo.flop ? '<span class="ml-2 text-racing font-bold">💥 flop!</span>' : ''}
+      </div>
+    </div>` : ''}
+
+    <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden">
+      <div class="p-5">
+        <div class="text-[11px] uppercase tracking-[0.25em] text-racing font-bold">Round ${S.round + 1} / ${CALENDAR.length}</div>
+        <div class="text-3xl sm:text-4xl font-black mt-1 leading-tight">${esc(r.flag)} GP ${esc(r.gp)}</div>
+        <div class="text-slate-400 text-sm">${esc(r.circuit)}</div>
+      </div>
+      <div class="h-1 bg-carbon3">
+        <div class="h-full bg-racing transition-all duration-700" style="width:${(S.round / CALENDAR.length) * 100}%"></div>
+      </div>
+    </div>
+
+    ${blocked ? `
+    <div class="bg-gold/10 border border-gold/40 rounded-2xl p-4 text-sm">
+      <span class="font-bold text-gold">🔧 Finestra di sviluppo aperta.</span>
+      <span class="text-slate-300">Passa alla scheda R&D prima della gara.</span>
+    </div>` : ''}
+
+    <button type="button" aria-label="Simula weekend completo" data-action="go-setup" ${blocked ? 'disabled' : ''}
+      class="w-full py-5 rounded-2xl font-black text-lg active:scale-[.98] transition ${blocked ? 'bg-carbon3 text-slate-600' : 'bg-racing neon hover:brightness-110'}">
+      ▶ SIMULA WEEKEND COMPLETO
+    </button>
+
+    <button type="button" aria-label="Simulazione rapida stagione" data-action="quick-season" ${blocked ? 'disabled' : ''}
+      class="w-full py-4 rounded-2xl font-bold neon-soft active:scale-[.98] transition ${blocked ? 'bg-carbon3 text-slate-600' : 'bg-carbon2 hover:bg-carbon3'}">
+      ⏩ SIMULAZIONE RAPIDA STAGIONE
+      <span class="block text-[11px] font-normal text-slate-500 mt-0.5">Gare rimanenti calcolate in blocco, R&D automatico incluso</span>
+    </button>
+
+    ${S.seasonLog.length ? `
+    <div class="bg-carbon2 rounded-2xl p-4 neon-soft">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 mb-3">Ultimi risultati</div>
+      <div class="space-y-1.5">
+        ${S.seasonLog.slice(-5).reverse().map(l => `
+          <div class="flex items-center gap-3 text-sm">
+            <span>${esc(l.flag)}</span>
+            <span class="flex-1 truncate text-slate-300">${esc(l.gp)}</span>
+            ${l.sc ? '<span class="text-[10px] text-gold" title="Safety Car">🚨</span>' : ''}
+            <span class="text-[11px] text-slate-500">P${l.grid} →</span>
+            <span class="font-black ${l.dnf ? 'text-racing' : l.pos <= 3 ? 'text-gold' : 'text-white'}">${l.dnf ? 'DNF' : 'P' + l.pos}</span>
+            <span class="w-8 text-right text-xs text-slate-400">${l.points ? '+' + l.points : ''}</span>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
+function tabStandings() {
+  const ds = driverStandings();
+  const ts = teamStandings();
+
+  return `
+  <div class="anim space-y-4">
+    <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-800 font-black text-sm uppercase tracking-wider">Classifica Piloti</div>
+      <div class="divide-y divide-slate-800/60">
+        ${ds.map((d, i) => {
+          const t = teamById(d.teamId);
+          return `
+          <div class="flex items-center gap-3 px-4 py-2.5 ${d.isPlayer ? 'bg-racing/15' : ''}">
+            <span class="w-6 text-center font-black text-sm ${i === 0 ? 'text-gold' : 'text-slate-500'}">${i + 1}</span>
+            <span class="w-1.5 h-6 rounded-sm shrink-0" style="background:${safeColor(t?.color)}"></span>
+            <span class="text-base">${esc(d.nat)}</span>
+            <span class="flex-1 truncate text-sm ${d.isPlayer ? 'font-black' : 'font-medium text-slate-300'}">${esc(d.name)}</span>
+            <span class="text-[10px] text-slate-500 hidden sm:inline">${esc(t?.short || '')}</span>
+            <span class="w-8 text-right text-[11px] text-slate-500">${d.ovr}</span>
+            <span class="w-10 text-right font-black">${d.pts}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+
+    <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-800 font-black text-sm uppercase tracking-wider">Classifica Costruttori</div>
+      <div class="divide-y divide-slate-800/60">
+        ${ts.map((t, i) => {
+          const isMine = t.id === S.player.teamId;
+          const b = isMine ? S.budget : (t.budgetNow || t.budget);
+          const overCap = b > BUDGET_CAP;
+          return `
+          <div class="flex items-center gap-3 px-4 py-2.5 ${isMine ? 'bg-racing/15' : ''}">
+            <span class="w-6 text-center font-black text-sm ${i === 0 ? 'text-gold' : 'text-slate-500'}">${i + 1}</span>
+            <span class="w-1.5 h-6 rounded-sm shrink-0" style="background:${safeColor(t.color)}"></span>
+            <span class="flex-1 truncate text-sm font-semibold">${esc(t.name)}</span>
+            <span class="text-[10px] hidden sm:inline ${overCap ? 'text-racing font-bold' : 'text-slate-500'}">BUD ${Math.round(b)}M$${overCap ? ' ⚠️' : ''}</span>
+            <span class="text-[10px] text-slate-500">CAR ${Math.round(t.car)}</span>
+            <span class="w-12 text-right font-black">${t.pts}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+function sponsorBox() {
+  if (S.sponsor) {
+    const pct = Math.min(100, Math.round((S.sponsor.progress / S.sponsor.target) * 100));
+    return `
+    <div class="bg-carbon2 rounded-2xl p-4 neon-soft">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400">💼 Sponsor Stagionale</div>
+        ${S.sponsor.completed ? '<span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white font-bold">COMPLETATO</span>' : ''}
+      </div>
+      <div class="font-black">${esc(S.sponsor.name)}</div>
+      <div class="text-[12px] text-slate-400 mb-2">${esc(S.sponsor.desc)}</div>
+      <div class="flex justify-between text-[11px] text-slate-500 mb-1">
+        <span>Progresso: ${S.sponsor.progress}/${S.sponsor.target}</span>
+        <span class="text-gold font-bold">Premio: ${S.sponsor.reward} M$</span>
+      </div>
+      <div class="h-2 rounded-full bg-carbon3 overflow-hidden">
+        <div class="h-full rounded-full transition-all duration-500 ${S.sponsor.completed ? 'bg-emerald-500' : 'bg-gold'}" style="width:${pct}%"></div>
+      </div>
+    </div>`;
+  }
+
+  if (S.sponsorOffers && S.sponsorOffers.length) {
+    return `
+    <div class="bg-carbon2 rounded-2xl p-4 neon-soft">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 mb-2">💼 Scegli il tuo Sponsor Stagionale</div>
+      <div class="space-y-2">
+        ${S.sponsorOffers.map(o => `
+          <button type="button" data-action="sponsor-pick" data-sponsor-id="${esc(o.id)}"
+            class="w-full text-left p-3 rounded-xl bg-carbon3 hover:bg-slate-700 transition active:scale-[.98]">
+            <div class="flex justify-between items-center gap-2">
+              <span class="font-bold text-sm">${esc(o.name)}</span>
+              <span class="text-gold text-xs font-black shrink-0">+${o.reward} M$</span>
+            </div>
+            <div class="text-[11px] text-slate-400 mt-0.5">${esc(o.desc)}</div>
+          </button>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  return '';
+}
+
+function tabRD() {
+  const t = playerTeam();
+  const consCost = rdEffectiveCost('cons', t.car, S.budget);
+  const balCost  = rdEffectiveCost('bal',  t.car, S.budget);
+  const aggCost  = rdEffectiveCost('agg',  t.car, S.budget);
+  const simCharges = t.simCharges || 0;
+
+  const overCapMult = rdOverCapMultiplier(S.budget);
+  const isOverCap = S.budget > BUDGET_CAP;
+
+  return `
+  <div class="anim space-y-4">
+    <div class="bg-carbon2 rounded-2xl p-4 neon-soft">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <div class="text-[11px] uppercase tracking-wider text-slate-400">Budget sviluppo</div>
+          <div class="text-3xl font-black text-gold">${Math.round(S.budget)} <span class="text-base text-slate-500">M$</span></div>
+          <div class="text-[10px] ${isOverCap ? 'text-racing font-bold' : 'text-slate-500'}">Cap: ${BUDGET_CAP} M$</div>
+        </div>
+        <div class="text-right">
+          <div class="text-[11px] uppercase tracking-wider text-slate-400">Monoposto</div>
+          <div class="text-3xl font-black" style="color:${safeColor(t.color)}">${Math.round(t.car)}</div>
+          <div class="text-[10px] text-slate-500">R&D skill ${(t.rdSkill * 100).toFixed(0)}%</div>
+        </div>
+      </div>
+      ${bar('Prestazione vettura', Math.round(t.car), t.color)}
+    </div>
+
+    ${isOverCap ? `
+    <div class="bg-racing/10 border border-racing/40 rounded-xl p-3 text-sm">
+      <div class="font-bold text-racing">⚠️ Oltre il Budget Cap (${BUDGET_CAP} M$)</div>
+      <div class="text-slate-300 mt-1 text-[12px]">
+        Costi R&amp;D maggiorati del <b class="text-racing">${Math.round((overCapMult - 1) * 100)}%</b>.
+        L'assegnazione di stagione è già stata ridotta dalla <b class="text-racing">luxury tax del ${Math.round(LUXURY_TAX_RATE * 100)}%</b> sull'eccedenza rispetto al cap.
+      </div>
+    </div>` : ''}
+
+    ${sponsorBox()}
+
+    ${S.rdOpen ? `
+      <div class="bg-gold/10 border border-gold/40 rounded-xl p-3 text-sm text-gold font-semibold">
+        Finestra aperta — puoi introdurre ${2 - S.rdDone} pacchetto/i.
+      </div>
+
+      ${simCharges > 0 ? `
+      <div class="bg-emerald-600/15 border border-emerald-600/40 rounded-xl p-3 text-[12px] text-emerald-300 font-semibold">
+        🖥️ Correlazione attiva: i prossimi ${simCharges} sviluppo/i hanno −${Math.round(SIM_BUFF_FAIL_REDUCTION * 100)}% di rischio.
+      </div>` : ''}
+
+      ${RD_PACKAGES.map(p => {
+        const cf = Math.round(rdEffectiveFail('cons', t.car, t.rdSkill, p.id, simCharges) * 100);
+        const bf = Math.round(rdEffectiveFail('bal',  t.car, t.rdSkill, p.id, simCharges) * 100);
+        const af = Math.round(rdEffectiveFail('agg',  t.car, t.rdSkill, p.id, simCharges) * 100);
+        return `
+        <div class="bg-carbon2 rounded-2xl p-4 neon-soft">
+          <div class="flex items-start gap-3 mb-3">
+            <div class="text-2xl">${esc(p.icon)}</div>
+            <div class="min-w-0">
+              <div class="font-black">${esc(p.name)}</div>
+              <div class="text-[12px] text-slate-400">${esc(p.desc)}</div>
+              <div class="text-[10px] text-slate-500 mt-0.5">${esc(p.note)}</div>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2">
+            <button type="button" aria-label="Conservativa, costo ${consCost} milioni" data-action="rd-run" data-pkg="${esc(p.id)}" data-strat="cons" ${S.budget < consCost ? 'disabled' : ''}
+              class="p-2.5 rounded-xl text-center transition active:scale-95 ${S.budget < consCost ? 'bg-carbon3 text-slate-600' : 'bg-carbon3 hover:bg-slate-700'}">
+              <div class="text-[11px] font-bold">Conservativa</div>
+              <div class="text-[10px] text-slate-500">${consCost} M$</div>
+              <div class="text-[9px] mt-1 text-emerald-400">rischio ${cf}%</div>
+            </button>
+            <button type="button" aria-label="Bilanciata, costo ${balCost} milioni" data-action="rd-run" data-pkg="${esc(p.id)}" data-strat="bal" ${S.budget < balCost ? 'disabled' : ''}
+              class="p-2.5 rounded-xl text-center transition active:scale-95 ${S.budget < balCost ? 'bg-carbon3 text-slate-600' : 'bg-carbon3 hover:bg-slate-700'}">
+              <div class="text-[11px] font-bold">Bilanciata</div>
+              <div class="text-[10px] text-slate-500">${balCost} M$</div>
+              <div class="text-[9px] mt-1 text-gold">rischio ${bf}%</div>
+            </button>
+            <button type="button" aria-label="Aggressiva, costo ${aggCost} milioni" data-action="rd-run" data-pkg="${esc(p.id)}" data-strat="agg" ${S.budget < aggCost ? 'disabled' : ''}
+              class="p-2.5 rounded-xl text-center transition active:scale-95 ${S.budget < aggCost ? 'bg-carbon3 text-slate-600' : 'bg-carbon3 hover:bg-slate-700'}">
+              <div class="text-[11px] font-bold">Aggressiva</div>
+              <div class="text-[10px] text-slate-500">${aggCost} M$</div>
+              <div class="text-[9px] mt-1 text-racing">rischio ${af}%</div>
+            </button>
+          </div>
+        </div>`;
+      }).join('')}
+
+      <button type="button" data-action="rd-close"
+        class="w-full py-3.5 rounded-2xl bg-carbon2 neon-soft text-slate-300 font-bold active:scale-[.98] transition">
+        Chiudi la finestra di sviluppo →
+      </button>
+    ` : `
+      <div class="bg-carbon2 rounded-2xl p-6 neon-soft text-center">
+        <div class="text-4xl mb-2">🔒</div>
+        <div class="font-bold">Nessuna finestra di sviluppo attiva</div>
+        <p class="text-sm text-slate-400 mt-1">Si riapre ogni ${RD_BLOCK} gare.</p>
+      </div>
+    `}
+
+    ${S.rdLog.length ? `
+    <div class="bg-carbon2 rounded-2xl p-4 neon-soft">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 mb-3">Storico sviluppi</div>
+      <div class="space-y-2.5">
+        ${S.rdLog.slice(0, 8).map(l => `
+          <div class="flex gap-3 items-start">
+            <span class="text-lg">${esc(l.icon)}</span>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-semibold truncate">${esc(l.pkg)} <span class="text-slate-500 font-normal">(${esc(l.strat)})</span></div>
+              <div class="text-[11px] text-slate-500">${l.year} • R${l.round} — ${esc(l.text)}</div>
+            </div>
+            <span class="font-black text-sm ${l.outcome === 'good' ? 'text-emerald-400' : l.outcome === 'neutral' ? 'text-slate-400' : 'text-racing'}">
+              ${l.delta >= 0 ? '+' : ''}${l.delta}
+            </span>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
+function tabCareer() {
+  const T = S.totals;
+  const piloti = S.hallOfFamePiloti || [];
+  const costruttori = S.hallOfFameCostruttori || [];
+  const sponsors = S.sponsorHistory || [];
+  const regs = S.regulationHistory || [];
+
+  return `
+  <div class="anim space-y-4">
+    <div class="bg-carbon2 rounded-2xl p-5 neon-soft">
+      <div class="text-center mb-4">
+        <div class="text-[11px] uppercase tracking-[0.3em] text-gold">Hall of Fame</div>
+        <div class="text-2xl font-black mt-1">${esc(S.player.name)}</div>
+      </div>
+      <div class="grid grid-cols-3 gap-2 text-center">
+        ${bigStat('🏆', T.titles, 'Titoli')}
+        ${bigStat('🥇', T.wins, 'Vittorie')}
+        ${bigStat('🍾', T.podiums, 'Podi')}
+        ${bigStat('⏱️', T.poles, 'Pole')}
+        ${bigStat('🏁', T.races, 'GP')}
+        ${bigStat('📈', T.points, 'Punti')}
+      </div>
+      <div class="grid grid-cols-2 gap-2 mt-2 text-center">
+        ${bigStat('📅', T.seasons, 'Stagioni')}
+        ${bigStat('💥', T.dnf, 'Ritiri')}
+      </div>
+    </div>
+
+    ${regs.length ? `
+    <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-800 font-black text-sm uppercase tracking-wider">⚙️ Storico Regolamenti Tecnici</div>
+      <div class="divide-y divide-slate-800/60">
+        ${[...regs].reverse().map(r => `
+          <div class="px-4 py-2.5">
+            <div class="flex items-center gap-3">
+              <span class="w-12 shrink-0 font-black text-sm text-slate-400">${r.year}</span>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-bold truncate">${esc(r.approachName)} ${r.flop ? '<span class="text-racing">💥</span>' : ''}</div>
+                <div class="text-[11px] text-slate-500">Costo ${r.cost} M$</div>
+              </div>
+              <span class="text-xs font-black ${r.delta > 0 ? 'text-emerald-400' : r.delta < 0 ? 'text-racing' : 'text-slate-500'}">${r.delta >= 0 ? '+' : ''}${r.delta} pt</span>
+            </div>
+            ${r.aiSummary && r.aiSummary.length ? `
+            <details class="mt-1.5 ml-12">
+              <summary class="text-[10px] uppercase tracking-wider text-slate-500 cursor-pointer hover:text-slate-300">Dettagli IA</summary>
+              <div class="mt-2 space-y-1 pl-1">
+                ${r.aiSummary.map(ai => `
+                  <div class="flex items-center gap-2 text-[11px]">
+                    <span class="w-1.5 h-3 rounded-sm shrink-0" style="background:${safeColor(ai.teamColor)}"></span>
+                    <span class="flex-1 truncate text-slate-400">${esc(ai.teamName)}</span>
+                    <span class="text-slate-500 shrink-0">${esc(ai.approachName)}</span>
+                    <span class="font-black w-10 text-right shrink-0 ${ai.delta >= 0 ? 'text-emerald-400' : 'text-racing'}">${ai.delta >= 0 ? '+' : ''}${ai.delta}</span>
+                  </div>`).join('')}
+              </div>
+            </details>` : ''}
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+
+    ${piloti.length ? `
+    <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-800 font-black text-sm uppercase tracking-wider">🏛️ Albo d'Oro — Campioni Piloti</div>
+      <div class="divide-y divide-slate-800/60">
+        ${[...piloti].reverse().map(h => `
+          <div class="flex items-center gap-3 px-4 py-2.5 ${h.playerWon ? 'bg-gold/10' : ''}">
+            <span class="w-12 shrink-0 font-black text-sm text-slate-400">${h.year}</span>
+            <span class="text-lg">${esc(h.driverNat || '')}</span>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-bold truncate ${h.playerWon ? 'text-gold' : ''}">${esc(h.driverName)}${h.playerWon ? ' 🏆' : ''}</div>
+              <div class="text-[11px] text-slate-500 flex items-center gap-1.5 truncate">
+                <span class="w-1.5 h-3 rounded-sm inline-block shrink-0" style="background:${safeColor(h.teamColor)}"></span>${esc(h.teamName)}
+              </div>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+
+    ${costruttori.length ? `
+    <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-800 font-black text-sm uppercase tracking-wider">🏗️ Albo d'Oro — Campioni Costruttori</div>
+      <div class="divide-y divide-slate-800/60">
+        ${[...costruttori].reverse().map(h => `
+          <div class="flex items-center gap-3 px-4 py-2.5 ${h.playerTeamWon ? 'bg-gold/10' : ''}">
+            <span class="w-12 shrink-0 font-black text-sm text-slate-400">${h.year}</span>
+            <span class="w-1.5 h-6 rounded-sm shrink-0" style="background:${safeColor(h.teamColor)}"></span>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-bold truncate ${h.playerTeamWon ? 'text-gold' : ''}">${esc(h.teamName)}${h.playerTeamWon ? ' 🏆' : ''}</div>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+
+    ${sponsors.length ? `
+    <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-800 font-black text-sm uppercase tracking-wider">💼 Storico Sponsor</div>
+      <div class="divide-y divide-slate-800/60">
+        ${sponsors.map(sp => `
+          <div class="flex items-center gap-3 px-4 py-2.5">
+            <span class="w-12 shrink-0 font-black text-sm text-slate-400">${sp.year}</span>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-bold truncate">${esc(sp.name)}</div>
+            </div>
+            <span class="text-xs font-black ${sp.completed ? 'text-emerald-400' : 'text-slate-600'}">${sp.completed ? '+' + sp.reward + ' M$' : 'Non raggiunto'}</span>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+
+    ${S.history.length ? `
+    <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-800 font-black text-sm uppercase tracking-wider">Storico stagioni</div>
+      <div class="divide-y divide-slate-800/60">
+        ${[...S.history].reverse().map(h => `
+          <div class="p-4">
+            <div class="flex items-center gap-3 mb-2">
+              <span class="w-1.5 h-9 rounded-sm" style="background:${safeColor(h.teamColor)}"></span>
+              <div class="flex-1 min-w-0">
+                <div class="font-black">${h.year} ${h.title ? '<span class="text-gold">🏆 CAMPIONE</span>' : ''}</div>
+                <div class="text-[11px] text-slate-400 truncate">${esc(h.team)} • ${h.pos}° in campionato</div>
+              </div>
+              <div class="text-right">
+                <div class="text-[10px] text-slate-500">OVR</div>
+                <div class="font-black text-sm">
+                  ${h.ovrStart} <span class="${h.ovrEnd >= h.ovrStart ? 'text-emerald-400' : 'text-racing'}">→ ${h.ovrEnd}</span>
+                </div>
+              </div>
+            </div>
+            <div class="grid grid-cols-4 gap-2 text-center text-[11px]">
+              <div class="bg-carbon3 rounded-lg py-1.5"><b class="block text-sm">${h.points}</b>punti</div>
+              <div class="bg-carbon3 rounded-lg py-1.5"><b class="block text-sm">${h.wins}</b>vitt.</div>
+              <div class="bg-carbon3 rounded-lg py-1.5"><b class="block text-sm">${h.podiums}</b>podi</div>
+              <div class="bg-carbon3 rounded-lg py-1.5"><b class="block text-sm">${h.poles}</b>pole</div>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>` : `
+    <div class="bg-carbon2 rounded-2xl p-6 neon-soft text-center text-slate-400 text-sm">
+      Nessuna stagione ancora conclusa.
+    </div>`}
+
+    <button type="button" data-action="career-abandon"
+      class="w-full py-3 rounded-2xl bg-carbon2 neon-soft text-slate-400 text-sm">← Menu principale</button>
+  </div>`;
+}
+
+function bigStat(icon, v, l) {
+  return `<div class="bg-carbon3 rounded-xl py-3">
+    <div class="text-lg">${icon}</div>
+    <div class="text-xl font-black">${v}</div>
+    <div class="text-[10px] uppercase tracking-wider text-slate-500">${l}</div>
+  </div>`;
+}
+
+function goSetup() {
+  S.screen = 'setup';
+  scheduleSave(0); render();
+}
+
+function chooseSetup(id) {
+  const r = CALENDAR[S.round];
+  const s = SETUPS.find(x => x.id === id);
+  if (!s) return;
+  S.setupBonus = setupBonusFor(id, r.type);
+  S.setupLabel = s.name;
+  save();
+  goQualifying();
+}
+
+function viewSetup() {
+  const r = CALENDAR[S.round];
+  return `
+  <div class="anim">
+    ${header('Setup pre-qualifica', esc(r.flag) + ' GP ' + esc(r.gp) + ' — ' + esc(r.circuit))}
+    <p class="text-sm text-slate-400 mb-4">Scegli l'assetto della monoposto per questo weekend. L'assetto giusto vale qualche decimo prezioso, quello sbagliato può costarti caro.</p>
+
+    <div class="space-y-3">
+      ${SETUPS.map(s => {
+        const bonus = setupBonusFor(s.id, r.type);
+        const color = bonus > 0 ? 'text-emerald-400' : bonus < 0 ? 'text-racing' : 'text-slate-400';
+        return `
+        <button type="button" data-action="pick-setup" data-setup-id="${esc(s.id)}"
+          class="w-full text-left p-4 rounded-2xl bg-carbon2 neon-soft border-2 border-transparent hover:border-racing active:scale-[.98] transition">
+          <div class="flex items-center gap-3">
+            <div class="text-2xl">${esc(s.icon)}</div>
+            <div class="flex-1 min-w-0">
+              <div class="font-black">${esc(s.name)}</div>
+              <div class="text-[12px] text-slate-400">${esc(s.desc)}</div>
+            </div>
+            <div class="text-right shrink-0">
+              <div class="text-[10px] uppercase tracking-wider text-slate-500">Stima</div>
+              <div class="font-black ${color}">${bonus > 0 ? '+' : ''}${bonus}</div>
+            </div>
+          </div>
+        </button>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function goQualifying() {
+  simQualifying();
+  S.screen = 'quali';
+  save(); render();
+}
+
+function viewQuali() {
+  const r = CALENDAR[S.round];
+  const myPos = S.grid.indexOf('PLAYER') + 1;
+
+  return `
+  <div class="anim">
+    <div class="text-center mb-4">
+      <div class="text-[11px] uppercase tracking-[0.3em] text-slate-500">Qualifiche</div>
+      <h2 class="text-2xl font-black">${esc(r.flag)} GP ${esc(r.gp)}</h2>
+      <div class="text-sm text-slate-400">${esc(S.weather.icon)} ${esc(S.weather.name)}</div>
+      ${S.setupLabel ? `<div class="text-xs text-slate-500 mt-1">Setup: <b class="text-slate-300">${esc(S.setupLabel)}</b> (${S.setupBonus >= 0 ? '+' : ''}${S.setupBonus})</div>` : ''}
+    </div>
+
+    <div class="rounded-2xl p-5 mb-4 text-center neon ${myPos === 1 ? 'bg-gold/20' : 'bg-carbon2'}">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400">La tua posizione in griglia</div>
+      <div class="text-6xl font-black ${myPos === 1 ? 'text-gold' : myPos <= 5 ? 'text-white' : 'text-slate-300'}">P${myPos}</div>
+      ${myPos === 1 ? '<div class="text-gold font-black mt-1">⏱️ POLE POSITION!</div>' : ''}
+    </div>
+
+    <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden mb-4">
+      <div class="divide-y divide-slate-800/60">
+        ${S.grid.map((id, i) => {
+          const d = driverById(id), t = teamById(d.teamId);
+          return `
+          <div class="flex items-center gap-3 px-4 py-2 ${d.isPlayer ? 'bg-racing/15' : ''}">
+            <span class="w-6 text-center font-black text-sm ${i === 0 ? 'text-gold' : 'text-slate-500'}">${i + 1}</span>
+            <span class="w-1.5 h-5 rounded-sm shrink-0" style="background:${safeColor(t?.color)}"></span>
+            <span>${esc(d.nat)}</span>
+            <span class="flex-1 truncate text-sm ${d.isPlayer ? 'font-black' : 'text-slate-300'}">${esc(d.name)}</span>
+            <span class="text-[10px] text-slate-500">${esc(t?.short || '')}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+
+    <button type="button" aria-label="Scegli la strategia" data-action="go-strategy" class="w-full py-5 rounded-2xl bg-racing neon font-black text-lg active:scale-[.98] transition">
+      🏎️ SCEGLI LA STRATEGIA →
+    </button>
+  </div>`;
+}
+
+function goStrategy() {
+  S.screen = 'strategy';
+  save(); render();
+}
+
+function chooseStrategy(id) {
+  const opts = pickAvailableStrategies(S.weather.name);
+  const s = opts.find(x => x.id === id);
+  if (!s) return;
+  S.playerStrategy = id;
+  S.strategyLabel = s.name;
+  save();
+  goRace();
+}
+
+function viewStrategy() {
+  const r = CALENDAR[S.round];
+  const opts = pickAvailableStrategies(S.weather.name);
+
+  return `
+  <div class="anim">
+    <div class="text-center mb-4">
+      <div class="text-[11px] uppercase tracking-[0.3em] text-slate-500">Strategia di gara</div>
+      <h2 class="text-2xl font-black">${esc(r.flag)} GP ${esc(r.gp)}</h2>
+      <div class="text-sm text-slate-400">${esc(S.weather.icon)} ${esc(S.weather.name)}</div>
+    </div>
+
+    <p class="text-sm text-slate-400 mb-4">Scegli la strategia gomme per questo Gran Premio. Le mescole disponibili dipendono dal meteo del weekend; la tua Gestione Gomme (${S.player.tyres}) riduce il degrado delle strategie più aggressive.</p>
+
+    <div class="space-y-3">
+      ${opts.map(s => `
+        <button type="button" data-action="pick-strategy" data-strat-id="${esc(s.id)}"
+          class="w-full text-left p-4 rounded-2xl bg-carbon2 neon-soft border-2 border-transparent hover:border-racing active:scale-[.98] transition">
+          <div class="flex items-center gap-3">
+            <div class="text-2xl">${esc(s.icon)}</div>
+            <div class="flex-1 min-w-0">
+              <div class="font-black">${esc(s.name)}</div>
+              <div class="text-[12px] text-slate-400">${esc(s.desc)}</div>
+            </div>
+          </div>
+        </button>`).join('')}
+    </div>
+  </div>`;
+}
+
+function goRace() {
+  simRace();
+  S.screen = 'race';
+  save(); render();
+  if (S.sponsor && S.sponsor.justCompleted) {
+    toast('💰 Obiettivo sponsor raggiunto! +' + S.sponsor.reward + ' M$', 'good');
+    S.sponsor.justCompleted = false;
+    save();
+  }
+}
+
+function viewRace() {
+  const r = CALENDAR[S.round - 1];
+  const me = S.lastRace.find(x => x.id === 'PLAYER');
+  const gained = me.grid - (me.pos || 21);
+
+  return `
+  <div class="anim">
+    <div class="text-center mb-4">
+      <div class="text-[11px] uppercase tracking-[0.3em] text-slate-500">Risultato gara</div>
+      <h2 class="text-2xl font-black">${esc(r.flag)} GP ${esc(r.gp)}</h2>
+      <div class="text-sm text-slate-400">${esc(S.weather.icon)} ${esc(S.weather.name)}</div>
+      ${S.setupLabel ? `<div class="text-xs text-slate-500 mt-1">Setup: <b class="text-slate-300">${esc(S.setupLabel)}</b> (${S.setupBonus >= 0 ? '+' : ''}${S.setupBonus})</div>` : ''}
+      ${S.strategyLabel ? `<div class="text-xs text-slate-500 mt-0.5">Strategia: <b class="text-slate-300">${esc(S.strategyLabel)}</b></div>` : ''}
+      ${S.lastSafetyCar ? `<div class="inline-flex items-center gap-1.5 mt-2 px-3 py-1 rounded-full bg-gold/20 text-gold text-xs font-bold">🚨 SAFETY CAR IN PISTA</div>` : ''}
+    </div>
+
+    <div class="rounded-2xl p-5 mb-4 text-center neon ${me.dnf ? 'bg-racing/20' : me.pos === 1 ? 'bg-gold/20' : me.pos <= 3 ? 'bg-emerald-600/15' : 'bg-carbon2'}">
+      ${me.dnf ? `
+        <div class="text-5xl mb-2">💥</div>
+        <div class="text-3xl font-black text-racing">RITIRO</div>
+        <div class="text-sm text-slate-300 mt-1">Problema tecnico: gara finita anzitempo.</div>
+      ` : `
+        <div class="text-[11px] uppercase tracking-wider text-slate-400">Posizione finale</div>
+        <div class="text-6xl font-black ${me.pos === 1 ? 'text-gold' : ''}">P${me.pos}</div>
+        <div class="text-sm mt-1 ${gained > 0 ? 'text-emerald-400' : gained < 0 ? 'text-racing' : 'text-slate-400'}">
+          ${gained > 0 ? '▲ +' + gained + ' posizioni' : gained < 0 ? '▼ ' + gained + ' posizioni' : '= posizione invariata'}${me.points ? ' • <b class="text-gold">+' + me.points + ' punti</b>' : ''}
+        </div>
+        <div class="text-sm mt-1 text-slate-400">${me.pos === 1 ? 'Vincitore' : '+' + me.gap.toFixed(3) + 's dal leader'}</div>${me.pos === 1 ? '<div class="text-gold font-black mt-2 text-lg">🏆 VITTORIA!</div>' : ''}
+      `}
+    </div>
+
+    <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden mb-4">
+      <div class="px-4 py-3 border-b border-slate-800 font-black text-xs uppercase tracking-wider">Ordine d'arrivo</div>
+      <div class="divide-y divide-slate-800/60">
+        ${S.lastRace.map(x => {
+          const d = driverById(x.id), t = teamById(d.teamId);
+          return `
+          <div class="flex items-center gap-2 px-4 py-2 ${d.isPlayer ? 'bg-racing/15' : ''} ${x.dnf ? 'opacity-50' : ''}">
+            <span class="w-6 text-center font-black text-sm ${x.pos === 1 ? 'text-gold' : 'text-slate-500'}">${x.dnf ? 'NC' : x.pos}</span>
+            <span class="w-1.5 h-5 rounded-sm shrink-0" style="background:${safeColor(t?.color)}"></span>
+            <span>${esc(d.nat)}</span>
+            <span class="flex-1 truncate text-sm ${d.isPlayer ? 'font-black' : 'text-slate-300'}">${esc(d.name)}</span>
+            <span class="text-[10px] text-slate-600 hidden sm:inline">P${x.grid}</span>
+            <span class="w-16 text-right text-[11px] shrink-0 ${x.dnf ? 'text-racing font-semibold' : x.pos === 1 ? 'text-gold font-bold' : 'text-slate-400'}">${x.dnf ? 'RITIRATO' : (x.pos === 1 ? 'Vincitore' : '+' + x.gap.toFixed(3) + 's')}</span>
+            <span class="w-6 text-right text-xs font-bold ${x.points ? 'text-gold' : 'text-slate-700'}">${x.points || '–'}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+
+    <button type="button" aria-label="Continua" data-action="after-race" class="w-full py-5 rounded-2xl bg-racing neon font-black text-lg active:scale-[.98] transition">
+      CONTINUA →
+    </button>
+  </div>`;
+}
+
+function afterRace() {
+  S.setupBonus = 0;
+  S.setupLabel = null;
+  S.playerStrategy = null;
+  S.strategyLabel = null;
+  S.lastRegulationInfo = null;
+  if (S.round >= CALENDAR.length) { S.screen = 'seasonEnd'; }
+  else { S.screen = 'hub'; S.tab = S.rdOpen ? 'rd' : 'race'; }
+  scheduleSave(0); render();
+}
+
+function quickSeason() {
+  askConfirm(
+    'Simulare in blocco tutte le gare rimanenti della stagione?',
+    startQuickSeason,
+    { yes: 'Simula' }
+  );
+}
+
+function startQuickSeason() {
+  const totalRaces = CALENDAR.length - S.round;
+  if (totalRaces <= 0) return;
+
+  app.innerHTML = `
+    <div class="anim min-h-[85vh] flex flex-col justify-center text-center px-6">
+      <div class="text-6xl mb-4 pulse-glow">⏩</div>
+      <div class="text-xl font-black">Simulazione in corso…</div>
+      <div class="text-sm text-slate-400 mt-2" id="qsLabel">0 / ${totalRaces}</div>
+      <div class="mt-5 h-2 rounded-full bg-carbon3 overflow-hidden max-w-xs mx-auto w-full">
+        <div id="qsProgress" class="h-full rounded-full bg-racing transition-all duration-200" style="width:0%"></div>
+      </div>
+    </div>`;
+
+  requestAnimationFrame(() => {
+    setTimeout(() => _runQuickSeason(totalRaces), 0);
+  });
+}
+
+async function _runQuickSeason(totalRaces) {
+  const carBefore = playerTeam().car;
+  const budgetBefore = S.budget;
+  let rdWindows = 0;
+  let processedRaces = 0;
+
+  try {
+    while (S.round < CALENDAR.length) {
+      const circuit = CALENDAR[S.round];
+      const autoId = circuit.type === 'twisty' ? 'aero' : circuit.type === 'power' ? 'top' : 'bal';
+      S.setupBonus = setupBonusFor(autoId, circuit.type);
+      S.setupLabel = SETUPS.find(s => s.id === autoId).name;
+
+      simQualifying();
+
+      const stratOpts = pickAvailableStrategies(S.weather.name);
+      const autoStrat = stratOpts[irnd(0, stratOpts.length - 1)];
+      S.playerStrategy = autoStrat.id;
+      S.strategyLabel = autoStrat.name;
+
+      simRace();
+
+      if (S.sponsor && S.sponsor.justCompleted) {
+        S.sponsor.justCompleted = false;
+      }
+
+      S.setupBonus = 0;
+      S.setupLabel = null;
+      S.playerStrategy = null;
+      S.strategyLabel = null;
+
+      if (S.rdOpen) {
+        rdWindows++;
+        autoRD();
+      }
+
+      processedRaces++;
+
+      if (processedRaces % 4 === 0 && S.round < CALENDAR.length) {
+        const label = document.getElementById('qsLabel');
+        const barEl = document.getElementById('qsProgress');
+        if (label) label.textContent = processedRaces + ' / ' + totalRaces;
+        if (barEl) barEl.style.width = ((processedRaces / totalRaces) * 100).toFixed(0) + '%';
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    S.lastRegulationInfo = null;
+    S.screen = 'seasonEnd';
+    save(); render();
+
+    if (rdWindows > 0) {
+      const carDelta = round1(playerTeam().car - carBefore);
+      const net = Math.round(S.budget - budgetBefore);
+      toast('🔧 R&D automatico: ' + rdWindows + ' finestra/e • ' + (carDelta >= 0 ? '+' : '') + carDelta + ' pt vettura • budget ' + (net >= 0 ? '+' : '') + net + ' M$', carDelta >= 0 ? 'good' : 'bad');
+    }
+  } catch (e) {
+    console.error('Errore nella simulazione rapida:', e);
+    S.setupBonus = 0;
+    S.setupLabel = null;
+    S.playerStrategy = null;
+    S.strategyLabel = null;
+    S.screen = 'hub';
+    S.tab = 'race';
+    save(); render();
+    toast('⚠️ Simulazione interrotta: ' + (e && e.message ? e.message : 'errore sconosciuto'), 'bad');
+  }
+}
+
+function viewSeasonEnd() {
+  const p = S.player;
+  const ds = driverStandings();
+  const pos = playerPos();
+  const champ = ds[0];
+  const mate = teammate();
+
+  const sponsorDone = !!S.sponsor && (S.sponsor.completed ||
+    (S.sponsor.type === 'title' && !!champ && champ.isPlayer));
+
+  return `
+  <div class="anim">
+    <div class="text-center mb-5">
+      <div class="text-[11px] uppercase tracking-[0.3em] text-racing">Fine stagione</div>
+      <h2 class="text-4xl font-black">${S.year}</h2>
+    </div>
+
+    <div class="bg-carbon2 rounded-2xl p-5 neon-soft mb-4 text-center">
+      ${champ && champ.isPlayer
+        ? `<div class="text-6xl mb-2">🏆</div><div class="text-2xl font-black text-gold">CAMPIONE DEL MONDO!</div>`
+        : `<div class="text-[11px] uppercase tracking-wider text-slate-400">Posizione finale</div>
+           <div class="text-6xl font-black">${pos}</div>
+           <div class="text-sm text-slate-400 mt-1">Campione: <b class="text-white">${esc(champ ? champ.name : '—')}</b></div>`}
+    </div>
+
+    <div class="grid grid-cols-4 gap-2 mb-4 text-center">
+      ${bigStat('📈', p.pts, 'Punti')}
+      ${bigStat('🥇', p.wins, 'Vittorie')}
+      ${bigStat('🍾', p.podiums, 'Podi')}
+      ${bigStat('⏱️', p.poles, 'Pole')}
+    </div>
+
+    ${S.sponsor ? `
+    <div class="bg-carbon2 rounded-2xl p-4 neon-soft mb-4">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 mb-2">💼 Sponsor Stagionale</div>
+      <div class="flex items-center justify-between gap-2">
+        <span class="font-bold text-sm">${esc(S.sponsor.name)}</span>
+        <span class="text-xs font-black text-right ${sponsorDone ? 'text-emerald-400' : 'text-slate-500'}">
+          ${sponsorDone
+            ? 'Obiettivo raggiunto! +' + S.sponsor.reward + ' M$' + (S.sponsor.type === 'title' ? ' (prossima stagione)' : '')
+            : 'Obiettivo non raggiunto (' + S.sponsor.progress + '/' + S.sponsor.target + ')'}
+        </span>
+      </div>
+    </div>` : ''}
+
+    ${mate ? `
+    <div class="bg-carbon2 rounded-2xl p-4 neon-soft mb-4">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 mb-3">Confronto interno</div>
+      <div class="flex items-center gap-3">
+        <div class="flex-1 text-center">
+          <div class="text-xs truncate">${esc(p.name)}</div>
+          <div class="text-2xl font-black ${p.pts >= mate.pts ? 'text-emerald-400' : 'text-racing'}">${p.pts}</div>
+        </div>
+        <div class="text-slate-600 font-black">VS</div>
+        <div class="flex-1 text-center">
+          <div class="text-xs truncate text-slate-400">${esc(mate.name)}</div>
+          <div class="text-2xl font-black ${mate.pts > p.pts ? 'text-emerald-400' : 'text-slate-500'}">${mate.pts}</div>
+        </div>
+      </div>
+    </div>` : ''}
+
+    <button type="button" aria-label="Valutazione di fine anno" data-action="season-eval" class="w-full py-5 rounded-2xl bg-racing neon font-black text-lg active:scale-[.98] transition">
+      VALUTAZIONE DI FINE ANNO →
+    </button>
+  </div>`;
+}
+
+function viewProgress() {
+  const pr = S.progression;
+  const p = S.player;
+
+  return `
+  <div class="anim">
+    ${header('Valutazione stagionale', 'Evoluzione differenziata delle prestazioni')}
+
+    <div class="bg-carbon2 rounded-2xl p-6 neon-soft text-center mb-4">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400">Overall</div>
+      <div class="flex items-center justify-center gap-4 mt-1">
+        <span class="text-4xl font-black text-slate-500">${pr.oldOVR}</span>
+        <span class="text-2xl ${pr.newOVR >= pr.oldOVR ? 'text-emerald-400' : 'text-racing'}">→</span>
+        <span class="text-5xl font-black ${pr.newOVR >= pr.oldOVR ? 'text-emerald-400' : 'text-racing'}">${pr.newOVR}</span>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3 mt-5 text-center">
+        <div class="bg-carbon3 rounded-xl py-2">
+          <div class="text-[10px] text-slate-500">VEL</div>
+          <div class="font-black text-lg">${p.speed}</div>
+          <div class="text-[11px] font-bold ${pr.speedDelta >= 0 ? 'text-emerald-400' : 'text-racing'}">${pr.speedDelta >= 0 ? '+' : ''}${pr.speedDelta}</div>
+        </div>
+        <div class="bg-carbon3 rounded-xl py-2">
+          <div class="text-[10px] text-slate-500">COS</div>
+          <div class="font-black text-lg">${p.consistency}</div>
+          <div class="text-[11px] font-bold ${pr.consDelta >= 0 ? 'text-emerald-400' : 'text-racing'}">${pr.consDelta >= 0 ? '+' : ''}${pr.consDelta}</div>
+        </div>
+        <div class="bg-carbon3 rounded-xl py-2">
+          <div class="text-[10px] text-slate-500">GOM</div>
+          <div class="font-black text-lg">${p.tyres}</div>
+          <div class="text-[11px] font-bold ${pr.tyreDelta >= 0 ? 'text-emerald-400' : 'text-racing'}">${pr.tyreDelta >= 0 ? '+' : ''}${pr.tyreDelta}</div>
+        </div>
+      </div>
+      <div class="text-[10px] text-slate-500 mt-2">I decimali non ancora "convertiti" in un punto pieno vengono riportati alla stagione successiva.</div>
+
+      <div class="mt-5 grid grid-cols-3 gap-3">
+        ${bar('VEL', p.speed, '#e10600')}
+        ${bar('COS', p.consistency, '#0090ff')}
+        ${bar('GOM', p.tyres, '#00594f')}
+      </div>
+    </div>
+
+    <div class="bg-carbon2 rounded-2xl p-4 neon-soft mb-4">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 mb-3">Fattori di valutazione</div>
+      <div class="space-y-2">
+        ${pr.reasons.map(r => `
+          <div class="flex justify-between text-sm">
+            <span class="text-slate-300">${esc(r[0])}</span>
+            <span class="font-black ${parseFloat(r[1]) > 0 ? 'text-emerald-400' : parseFloat(r[1]) < 0 ? 'text-racing' : 'text-slate-500'}">${esc(r[1])}</span>
+          </div>`).join('')}
+      </div>
+    </div>
+
+    <div class="bg-carbon3 rounded-2xl p-4 text-sm text-slate-300 mb-4">
+      📄 <b class="text-white">${esc(p.role || 'Pilota Titolare')}</b> per altri <b class="text-white">${p.contract}</b> anno/i con <b style="color:${safeColor(playerTeam().color)}">${esc(playerTeam().name)}</b>.
+    </div>
+
+    <button type="button" aria-label="Inizia la prossima stagione" data-action="new-season" class="w-full py-5 rounded-2xl bg-racing neon font-black text-lg active:scale-[.98] transition">
+      INIZIA LA STAGIONE ${S.year + 1} →
+    </button>
+  </div>`;
+}
+
+function viewMarket() {
+  const p = S.player;
+
+  return `
+  <div class="anim">
+    ${header(S.fired ? '⚠️ Contratto risolto' : 'Mercato Piloti',
+             S.fired ? `Il tuo OVR è sceso sotto ${OVR_FIRE}: la squadra ti ha licenziato.`
+                     : 'Scegli la tua scuderia per la stagione ' + (S.year + 1) + '.')}
+
+    ${S.progression ? `
+    <div class="bg-carbon2 rounded-2xl p-4 neon-soft mb-4 flex items-center justify-between">
+      <span class="text-sm text-slate-400">Overall aggiornato</span>
+      <span class="text-lg font-black">
+        <span class="text-slate-500">${S.progression.oldOVR}</span>
+        <span class="${S.progression.newOVR >= S.progression.oldOVR ? 'text-emerald-400' : 'text-racing'}"> → ${S.progression.newOVR}</span>
+      </span>
+    </div>` : ''}
+
+    <div class="space-y-3">
+      ${S.offers.map((o, i) => {
+        const t = teamById(o.teamId);
+        return `
+        <button type="button" data-action="market-pick" data-offer-index="${i}"
+          class="w-full text-left p-4 rounded-2xl bg-carbon2 neon-soft border-2 border-transparent hover:border-racing active:scale-[.98] transition">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-3 h-11 rounded-sm" style="background:${safeColor(t.color)}"></div>
+            <div class="flex-1 min-w-0">
+              <div class="font-black text-lg leading-tight">${esc(t.name)}</div>
+              <div class="text-[11px] text-slate-400">${esc(o.role)} • ${o.years} stagione/i • ${o.salary} M$/anno</div>
+            </div>
+            ${o.teamId === p.teamId ? '<span class="text-[10px] px-2 py-1 rounded-full bg-carbon3 text-slate-400">Attuale</span>' : ''}
+          </div>
+          ${bar('Monoposto attesa', Math.round(t.car), t.color)}
+        </button>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function viewRegulations() {
+  const team = playerTeam();
+  const snap = S.regulationSnapshot || {};
+  const mySnap = snap[team.id] || { old: team.car, compressed: team.car };
+  const compressedDelta = round1(mySnap.compressed - mySnap.old);
+
+  return `
+  <div class="anim">
+    <div class="text-center mb-5">
+      <div class="text-[11px] uppercase tracking-[0.3em] text-racing font-bold">Anno ${S.year}</div>
+      <h2 class="text-3xl sm:text-4xl font-black mt-1 leading-tight">⚙️ NUOVO REGOLAMENTO TECNICO</h2>
+      <p class="text-slate-400 text-sm mt-3 max-w-2xl mx-auto">
+        La Federazione introduce un pacchetto di regole tecniche che azzera i riferimenti progettuali.
+        Tutte le monoposto vengono riportate verso una finestra prestazionale comune: è il momento di
+        ripensare il progetto della tua vettura.
+      </p>
+      <div class="mt-4 h-1 w-24 mx-auto rounded-full bg-gradient-to-r from-transparent via-racing to-transparent pulse-glow"></div>
+    </div>
+
+    <div class="bg-racing/10 border border-racing/40 rounded-2xl p-4 mb-4">
+      <div class="text-[11px] uppercase tracking-wider text-racing font-bold mb-3">🔧 Effetto base del regolamento</div>
+      <div class="grid grid-cols-3 gap-2 text-center">
+        <div class="bg-carbon3 rounded-xl py-3">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500">Vettura prima</div>
+          <div class="font-black text-2xl mt-1">${round1(mySnap.old)}</div>
+        </div>
+        <div class="bg-carbon3 rounded-xl py-3">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500">Post-compressione</div>
+          <div class="font-black text-2xl mt-1 text-gold">${round1(mySnap.compressed)}</div>
+        </div>
+        <div class="bg-carbon3 rounded-xl py-3">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500">Delta base</div>
+          <div class="font-black text-2xl mt-1 ${compressedDelta >= 0 ? 'text-emerald-400' : 'text-racing'}">${compressedDelta >= 0 ? '+' : ''}${compressedDelta}</div>
+        </div>
+      </div>
+      <div class="text-[11px] text-slate-400 mt-2 text-center">
+        Le distanze tra i team sono state ridotte verso la mediana (${REGULATION_MEDIAN}).
+      </div>
+    </div>
+
+    <div class="bg-carbon2 rounded-2xl p-4 neon-soft mb-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="text-[11px] uppercase tracking-wider text-slate-400">Budget disponibile</div>
+          <div class="text-3xl font-black text-gold">${Math.round(S.budget)} <span class="text-base text-slate-500">M$</span></div>
+        </div>
+        <div class="text-right">
+          <div class="text-[11px] uppercase tracking-wider text-slate-400">Vettura attuale</div>
+          <div class="text-3xl font-black" style="color:${safeColor(team.color)}">${Math.round(team.car)}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="text-[11px] uppercase tracking-wider text-slate-400 mb-2 px-1">Scegli il progetto tecnico</div>
+
+    <div class="space-y-3">
+      ${['rev','bal','scommessa','cons'].map(id => {
+        const s = REGULATION_STRATEGIES[id];
+        const ok = S.budget >= s.cost || id === 'cons';
+        const accent = id === 'rev' ? 'text-racing' : id === 'bal' ? 'text-gold' : id === 'scommessa' ? 'text-gold' : 'text-emerald-400';
+        return `
+        <button type="button" data-action="regulation-pick" data-approach-id="${esc(id)}" ${ok ? '' : 'disabled'}
+          class="w-full text-left p-4 rounded-2xl neon-soft border-2 transition active:scale-[.98] ${ok ? 'bg-carbon2 border-transparent hover:border-racing' : 'bg-carbon3 border-transparent opacity-50 cursor-not-allowed'}">
+          <div class="flex items-center gap-3">
+            <div class="text-3xl">${esc(s.icon)}</div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between gap-2">
+                <div class="font-black text-lg">${esc(s.name)}</div>
+                <div class="text-xs font-black text-gold shrink-0">${s.cost} M$</div>
+              </div>
+              <div class="text-[12px] text-slate-400 mt-0.5">${esc(s.desc)}</div>
+              <div class="text-[11px] mt-1.5 font-bold ${accent}">
+                Varianza: ${s.hint} pt
+              </div>
+            </div>
+          </div>
+        </button>`;
+      }).join('')}
+    </div>
+
+    <p class="text-center text-[11px] text-slate-500 mt-5">
+      Le scuderie rivali hanno già avviato i loro progetti in fabbrica. La tua scelta condizionerà la griglia dei prossimi anni.
+    </p>
+  </div>`;
+}
+
+function viewRetire() {
+  const T = S.totals;
+
+  return `
+  <div class="anim min-h-[85vh] flex flex-col justify-center">
+    <div class="text-center mb-6">
+      <div class="text-6xl mb-3">🎖️</div>
+      <div class="text-[11px] uppercase tracking-[0.3em] text-gold">Fine della carriera</div>
+      <h2 class="text-3xl sm:text-4xl font-black mt-1">${esc(S.player.name)}</h2>
+      <p class="text-slate-400 text-sm mt-2">A ${RETIRE_AGE} anni si ritira dopo ${T.seasons} stagioni in F1.</p>
+    </div>
+
+    <div class="bg-carbon2 rounded-2xl p-5 neon-soft mb-4">
+      <div class="grid grid-cols-3 gap-2 text-center">
+        ${bigStat('🏆', T.titles, 'Titoli')}
+        ${bigStat('🥇', T.wins, 'Vittorie')}
+        ${bigStat('🍾', T.podiums, 'Podi')}
+        ${bigStat('⏱️', T.poles, 'Pole')}
+        ${bigStat('🏁', T.races, 'GP')}
+        ${bigStat('📈', T.points, 'Punti')}
+      </div>
+    </div>
+
+    <button type="button" data-action="career-wipe-restart" class="w-full py-5 rounded-2xl bg-racing neon font-black text-lg active:scale-[.98] transition">
+      🏁 NUOVA CARRIERA
+    </button>
+  </div>`;
+}
+
+function viewGameOver() {
+  return `
+  <div class="anim min-h-[85vh] flex flex-col justify-center text-center">
+    <div class="text-6xl mb-3">🚫</div>
+    <div class="text-[11px] uppercase tracking-[0.3em] text-racing">Game Over</div>
+    <h2 class="text-3xl font-black mt-1">Nessun sedile disponibile</h2>
+    <p class="text-slate-400 text-sm mt-3 max-w-md mx-auto">
+      Con un Overall di <b class="text-racing">${S.player.ovr}</b> nessuna scuderia ti ha offerto un contratto.
+    </p>
+    <button type="button" data-action="career-wipe-restart" class="w-full py-5 mt-6 rounded-2xl bg-racing neon font-black text-lg active:scale-[.98] transition">
+      RIPROVA DA ZERO
+    </button>
+  </div>`;
+}
+
+/* =========================================================================
+   ======================== SIMULATION (QUALI / RACE) ======================
+   ========================================================================= */
+
+function pickWeather() {
+  const r = rng();
+  if (r < 0.58) return { name:'Asciutto',   icon:'☀️', chaos:1.0 };
+  if (r < 0.85) return { name:'Variabile', icon:'🌤️', chaos:1.5 };
+  return              { name:'Pioggia',    icon:'🌧️', chaos:2.2 };
+}
+
+function basePace(d) {
+  const car = teamById(d.teamId).car;
+  let pace = car * SIM_TUNING.qualiCarWeight + d.ovr * SIM_TUNING.qualiOvrWeight;
+  if (d.isPlayer && S.setupBonus) pace += S.setupBonus;
+  return pace;
+}
+
+function simQualifying() {
+  S.weather = pickWeather();
+  const w = S.weather;
+
+  const rows = S.drivers.map(d => {
+    let sc = basePace(d);
+
+    if (d.isPlayer) {
+      sc += (d.speed - 50) * SIM_TUNING.qualiPlayerSpeedBoost;
+      const negScale = clamp(
+        1 - (d.consistency - 50) * SIM_TUNING.qualiNegScaleConsistency,
+        SIM_TUNING.qualiNegScaleMin,
+        SIM_TUNING.qualiNegScaleMax
+      );
+      let q = rnd(-SIM_TUNING.qualiNoise, SIM_TUNING.qualiNoise);
+      if (q < 0) q *= negScale;
+      sc += q * (1 + (w.chaos - 1) * SIM_TUNING.qualiWeatherChaosScale);
+    } else {
+      sc += rnd(-SIM_TUNING.qualiNoise, SIM_TUNING.qualiNoise) * (1 + (w.chaos - 1) * SIM_TUNING.qualiWeatherChaosScale);
+    }
+    return { id: d.id, sc };
+  });
+
+  rows.sort((a, b) => b.sc - a.sc);
+  S.grid = rows.map(r => r.id);
+
+  const poleDriver = driverById(S.grid[0]);
+  poleDriver.poles++;
+  if (poleDriver.isPlayer) S.totals.poles++;
+}
+
+function simRace() {
+  const w = S.weather || pickWeather();
+  const circuit = CALENDAR[S.round];
+  const results = [];
+
+  S.grid.forEach((id, gridPos) => {
+    const d = driverById(id);
+    const car = teamById(d.teamId).car;
+
+    let sc = car * SIM_TUNING.raceCarWeight + d.ovr * SIM_TUNING.raceOvrWeight;
+    sc -= gridPos * SIM_TUNING.raceGridPenalty;
+
+    const stratId = d.isPlayer ? (S.playerStrategy || pickRandomStrategy(w.name)) : pickRandomStrategy(w.name);
+    const strat = applyStrategyEffect(stratId, w.name, circuit.type, d.isPlayer ? d.tyres : 50);
+    sc += strat.bonus;
+
+    if (d.isPlayer) {
+      const negScale = clamp(
+        1 - (d.consistency - 50) * SIM_TUNING.raceNegScaleConsistency,
+        SIM_TUNING.raceNegScaleMin,
+        SIM_TUNING.raceNegScaleMax
+      );
+      let roll = rnd(-SIM_TUNING.raceNoise, SIM_TUNING.raceNoise);
+      if (roll < 0) roll *= negScale;
+      sc += roll * w.chaos * strat.chaosScale;
+    } else {
+      sc += rnd(-SIM_TUNING.raceNoise, SIM_TUNING.raceNoise) * w.chaos * strat.chaosScale;
+    }
+
+    if (d.isPlayer) {
+      sc += (S.setupBonus || 0);
+      const expectedPace = TITLE_THRESHOLD_PER_RACE * S.round;
+      if (S.player.pts > expectedPace * SIM_TUNING.snowballThreshold + 5) {
+        sc -= Math.min(SIM_TUNING.snowballMax, (S.player.pts - expectedPace) * SIM_TUNING.snowballSlope);
+      }
+    } else {
+      sc += rnd(-SIM_TUNING.raceAiFlavorNoise, SIM_TUNING.raceAiFlavorNoise);
+    }
+
+    const dnfChance = clamp(
+      SIM_TUNING.dnfBase + (100 - car) * SIM_TUNING.dnfCarSlope + (w.chaos - 1) * SIM_TUNING.dnfWeatherSlope,
+      SIM_TUNING.dnfMin,
+      SIM_TUNING.dnfMax
+    );
+    const dnf = rng() < dnfChance;
+
+    results.push({ id, sc, dnf, grid: gridPos + 1, strat: stratId });
+  });
+
+  const nonDnfResults = results.filter(r => !r.dnf);
+  const dnfResults    = results.filter(r => r.dnf);
+
+  const anyDnf = dnfResults.length > 0;
+  const safetyCar = anyDnf && rng() < SIM_TUNING.scProbability;
+
+  if (safetyCar && nonDnfResults.length > 1) {
+    const scValues = nonDnfResults.map(r => r.sc);
+    const maxSc = Math.max(...scValues);
+    const minSc = Math.min(...scValues);
+    const range = maxSc - minSc || 1;
+    nonDnfResults.forEach(r => {
+      const normalized = (r.sc - minSc) / range;
+      const compacted = minSc + normalized * range * SIM_TUNING.scCompaction;
+      r.sc = compacted + rnd(-SIM_TUNING.scNoise, SIM_TUNING.scNoise);
+    });
+  }
+
+  const finish = nonDnfResults.sort((a, b) => b.sc - a.sc);
+  const out    = dnfResults;
+
+  const leaderSc = finish.length ? finish[0].sc : 0;
+  finish.forEach((r, i) => {
+    r.gap = i === 0 ? 0 : round3((leaderSc - r.sc) * SIM_TUNING.gapFactor);
+  });
+
+  if (safetyCar && finish.length > 1) {
+    const maxGap = finish[finish.length - 1].gap;
+    const capTarget = rnd(SIM_TUNING.scGapCapMin, SIM_TUNING.scGapCapMax);
+    if (maxGap > capTarget) {
+      const scale = capTarget / maxGap;
+      finish.forEach(r => { r.gap = round3(r.gap * scale); });
+    }
+  }
+
+  out.forEach(r => { r.gap = null; });
+
+  const order = [...finish, ...out];
+
+  order.forEach((r, i) => {
+    const d = driverById(r.id);
+    r.pos = r.dnf ? null : i + 1;
+    r.points = (!r.dnf && i < 10) ? POINTS[i] : 0;
+    d.pts += r.points;
+    if (r.dnf) d.dnf++;
+    if (r.pos === 1) d.wins++;
+    if (r.pos && r.pos <= 3) d.podiums++;
+  });
+
+  S.lastRace = order;
+  S.lastSafetyCar = safetyCar;
+
+  const me = order.find(r => r.id === 'PLAYER');
+  const race = CALENDAR[S.round];
+  S.seasonLog.push({
+    gp: race.gp, flag: race.flag,
+    grid: me.grid, pos: me.pos, points: me.points,
+    dnf: me.dnf, weather: w.name, sc: safetyCar,
+    strat: me.strat
+  });
+
+  S.totals.races++;
+  S.totals.points += me.points;
+  if (me.dnf) S.totals.dnf++;
+  if (me.pos === 1) S.totals.wins++;
+  if (me.pos && me.pos <= 3) S.totals.podiums++;
+
+  if (S.telemetry) {
+    if (me.dnf) S.telemetry.dnfCount++;
+  }
+  recordRaceTelemetry(w.name, safetyCar);
+
+  if (S.sponsor && !S.sponsor.completed && S.sponsor.type !== 'title') {
+    const qualifies = (S.sponsor.type === 'top10' && me.pos && me.pos <= 10)
+                   || (S.sponsor.type === 'podium' && me.pos && me.pos <= 3);
+    if (qualifies) {
+      S.sponsor.progress++;
+      if (S.sponsor.progress >= S.sponsor.target) {
+        S.sponsor.completed = true;
+        S.budget += S.sponsor.reward;
+        S.sponsor.justCompleted = true;
+      }
+    }
+  }
+
+  S.round++;
+
+  if (S.round % RD_BLOCK === 0 && S.round < CALENDAR.length) {
+    S.rdOpen = true;
+    S.rdDone = 0;
+    processAIRDActivity(teamStandings(), true);
+  }
+}
+
+/* =========================================================================
+   =========================== STANDINGS HELPERS ===========================
+   ========================================================================= */
+
+function driverStandings() {
+  return [...S.drivers].sort((a, b) =>
+    b.pts - a.pts || b.wins - a.wins || b.podiums - a.podiums
+  );
+}
+
+function teamStandings() {
+  return S.teams.map(t => {
+    const ds = S.drivers.filter(d => d.teamId === t.id);
+    return { ...t, pts: ds.reduce((s, d) => s + d.pts, 0), drivers: ds };
+  }).sort((a, b) => b.pts - a.pts);
+}
+
+function playerPos() {
+  if (!S || !S.drivers || !S.drivers.length) return '—';
+  const idx = driverStandings().findIndex(d => d.isPlayer);
+  return idx < 0 ? '—' : idx + 1;
+}
+
+/* =========================================================================
+   ============================= DEBUG ====================================
+   ========================================================================= */
+
+function debugInvariants() {
+  const issues = [];
+  const check = (cond, msg) => { if (!cond) issues.push(msg); };
+
+  if (!S) { console.warn('No active state'); return []; }
+
+  check(S.player.ovr >= 30 && S.player.ovr <= 99, 'Player OVR out of range: ' + S.player.ovr);
+  check(S.player.age >= 18 && S.player.age <= 60, 'Player age out of range: ' + S.player.age);
+  check(S.player.speed >= 30 && S.player.speed <= 99, 'Player speed out of range');
+  check(S.player.consistency >= 30 && S.player.consistency <= 99, 'Player consistency out of range');
+  check(S.player.tyres >= 30 && S.player.tyres <= 99, 'Player tyres out of range');
+
+  const teamIds = new Set();
+  S.teams.forEach(t => {
+    check(!teamIds.has(t.id), 'Duplicate team ID: ' + t.id);
+    teamIds.add(t.id);
+    check(t.car >= 30 && t.car <= 99, 'Team ' + t.id + ' car out of range: ' + t.car);
+    check(t.budgetNow >= 0, 'Team ' + t.id + ' budgetNow negative: ' + t.budgetNow);
+    const drivers = S.drivers.filter(d => d.teamId === t.id);
+    check(drivers.length === 2, 'Team ' + t.id + ' has ' + drivers.length + ' drivers (expected 2)');
+  });
+
+  const driverIds = new Set();
+  S.drivers.forEach(d => {
+    check(!driverIds.has(d.id), 'Duplicate driver ID: ' + d.id);
+    driverIds.add(d.id);
+    check(d.ovr >= 30 && d.ovr <= 99, 'Driver ' + d.name + ' OVR out of range: ' + d.ovr);
+    check(d.age >= 18 && d.age <= 60, 'Driver ' + d.name + ' age out of range: ' + d.age);
+    check(teamIds.has(d.teamId), 'Driver ' + d.name + ' has invalid teamId: ' + d.teamId);
+    check(d.pts >= 0, 'Driver ' + d.name + ' has negative points');
+  });
+
+  check(Number.isInteger(S.round) && S.round >= 0 && S.round <= CALENDAR.length,
+    'Invalid round: ' + S.round);
+
+  check(S.budget >= 0, 'Player budget negative: ' + S.budget);
+
+  check(Number.isInteger(S.rngState) && S.rngState >= 0 && S.rngState <= 0xFFFFFFFF,
+    'Invalid RNG state');
+
+  try { JSON.stringify(S); } catch (e) { issues.push('State not serializable: ' + e.message); }
+
+  if (issues.length === 0) console.log('✅ Tutti gli invarianti OK');
+  else {
+    console.warn('❌ ' + issues.length + ' violazioni:');
+    issues.forEach(i => console.warn('  • ' + i));
+  }
+  return issues;
+}
+
+function debugTelemetry() {
+  if (!S || !S.telemetry) { console.warn('Nessuna telemetria'); return null; }
+  const T = S.telemetry;
+  const avgChampOvr = T.championOvrCount > 0 ? T.championOvrSum / T.championOvrCount : 0;
+
+  const budgetAvgByTeam = {};
+  Object.keys(T.budgetSumByTeam).forEach(id => {
+    const samples = T.budgetSamplesByTeam[id] || 1;
+    budgetAvgByTeam[id] = round1(T.budgetSumByTeam[id] / samples);
+  });
+
+  const summary = {
+    seasons: T.seasonsSimulated,
+    constructorTitles: { ...T.constructorTitles },
+    driverTitles: { ...T.driverTitles },
+    rookieTitles: T.rookieTitles,
+    avgChampionOvr: round1(avgChampOvr),
+    totalDnf: T.dnfCount,
+    totalSafetyCars: T.scCount,
+    weather: { ...T.weatherCounts },
+    rnd: { spendTotal: T.rdSpendTotal, successes: T.rdSuccessCount, failures: T.rdFailCount },
+    transfers: T.transfersCount,
+    retirements: T.retirementsCount,
+    avgBudgetByTeam: budgetAvgByTeam
+  };
+  console.log('Telemetria:', summary);
+  return summary;
+}
+
+function debugCarDistribution() {
+  if (!S) return [];
+  const cars = S.teams.map(t => ({
+    id: t.id,
+    name: t.name,
+    car: t.car,
+    minCar: t.minCar,
+    budgetNow: Math.round(t.budgetNow || 0),
+    overCap: (t.budgetNow || 0) > BUDGET_CAP ? 'YES' : 'no',
+    rdPenaltyPct: Math.round((rdOverCapMultiplier(t.budgetNow || 0) - 1) * 100) + '%',
+    rdSkill: round3(t.rdSkill || 0),
+    simCharges: t.simCharges || 0
+  }));
+  console.table(cars);
+  return cars;
+}
+
+function debugBudgetCap() {
+  if (!S) return [];
+  const rows = S.teams.map(t => {
+    const b = t.budgetNow || 0;
+    const raw = (() => {
+      const base = t.budget;
+      const posBonus = 0.7 + 0.7 * Math.pow(0.5, 0.8);
+      const prestigeFactor = 0.9 + ((t.prestige || 70) - 65) * 0.006;
+      return Math.round(base * posBonus * prestigeFactor);
+    })();
+    return {
+      id: t.id,
+      name: t.name,
+      budgetNow: Math.round(b),
+      overCap: b > BUDGET_CAP ? 'YES' : 'no',
+      excess: Math.max(0, Math.round(b - BUDGET_CAP)),
+      rdPenaltyPct: Math.round((rdOverCapMultiplier(b) - 1) * 100) + '%',
+      taxApplied: raw > BUDGET_CAP ? 'would-tax' : 'no'
+    };
+  });
+  console.table(rows);
+  return rows;
+}
+
+function debugRegulation() {
+  if (!S) return;
+  console.log('regulationPending:', S.regulationPending);
+  console.log('Current year:', S.year, '| Next regulation year:', Math.ceil(S.year / REGULATION_PERIOD) * REGULATION_PERIOD);
+  console.log('regulationHistory:', S.regulationHistory);
+  console.table(S.teams.map(t => ({ id: t.id, name: t.name, car: t.car, minCar: t.minCar, maxCar: t.maxCar })));
+}
+
+function debugForceRegulation() {
+  if (!S) return;
+  S.regulationPending = true;
+  S.regulationSnapshot = null;
+  applyRegulationCompression();
+  S.screen = 'regulations';
+  save(); render();
+  console.log('⚙️ Regolamento forzato. Scegli il progetto.');
+}
+
+function debugResetTelemetry() {
+  if (!S) return;
+  S.telemetry = defaultTelemetry();
+  console.log('Telemetria resettata');
+}
+
+/* =========================================================================
+   ============================ TEST SUITE =================================
+   ========================================================================= */
+
+const TESTS = [];
+function test(name, fn) { TESTS.push({ name, fn }); }
+function assert(c, m) { if (!c) throw new Error(m || 'asserzione fallita'); }
+function assertEq(a, b, m) {
+  if (a !== b) throw new Error((m || 'uguaglianza') + ': ' + JSON.stringify(a) + ' !== ' + JSON.stringify(b));
+}
+function assertClose(a, b, eps, m) {
+  eps = eps == null ? 0.001 : eps;
+  if (Math.abs(a - b) > eps) throw new Error((m || 'prossimità') + ': ' + a + ' !~ ' + b);
+}
+
+function withTestState(fn) {
+  const savedS = S, savedRng = RNG_STATE;
+  try {
+    S = newCareer({ first: 'Test', last: 'Driver', nat: '🇮🇹', age: 20, speed: 60, consistency: 60, tyres: 60, teamId: 'cad' });
+    seedRng(0xC0FFEE);
+    return fn();
+  } finally {
+    S = savedS;
+    RNG_STATE = savedRng;
+  }
+}
+
+test('durante i test save() è un no-op e non tocca localStorage', () => {
+  assertEq(IO_SUSPENDED, true, 'IO_SUSPENDED dovrebbe essere attivo');
+  withTestState(() => {
+    assertEq(save(), false, 'save() deve essere no-op durante i test');
+  });
+});
+
+test('clamp blocca i valori nei limiti', () => {
+  assertEq(clamp(5, 0, 10), 5);
+  assertEq(clamp(-5, 0, 10), 0);
+  assertEq(clamp(15, 0, 10), 10);
+});
+
+test('round1 e round3 arrotondano correttamente', () => {
+  assertEq(round1(1.23), 1.2);
+  assertEq(round1(1.25), 1.3);
+  assertEq(round3(1.2345), 1.234);
+  assertEq(round3(1.2346), 1.235);
+});
+
+/* FIX v18.1: la stringa è spezzata in modo che il parser HTML non trovi
+   `` letterale e non chiuda il blocco in anticipo. */
+test('sanitizeName rimuove caratteri pericolosi (incluso "/")', () => {
+  const evil = '<scr' + 'ipt>alert(1)</scr' + 'ipt>';
+  assertEq(sanitizeName(evil), 'scriptalert(1)script');
+  assertEq(sanitizeName('a&b'), 'ab');
+  assertEq(sanitizeName('"name"'), 'name');
+});
+
+test('sanitizeName rimuove RTL/format override', () => {
+  assertEq(sanitizeName('ab\u202Ecd'), 'abcd');
+  assertEq(sanitizeName('ab\u200Fcd'), 'abcd');
+  assertEq(sanitizeName('ab\u2066cd'), 'abcd');
+});
+
+test('sanitizeName limita a 24 caratteri (default) o al max indicato', () => {
+  assertEq(sanitizeName('a'.repeat(100)).length, 24);
+  assertEq(sanitizeName('a'.repeat(100), 32).length, 32);
+});
+
+test('sanitizeName gestisce null/undefined', () => {
+  assertEq(sanitizeName(null), '');
+  assertEq(sanitizeName(undefined), '');
+  assertEq(sanitizeName(0), '0');
+});
+
+test('safeColor accetta solo hex validi', () => {
+  assertEq(safeColor('#fff'), '#fff');
+  assertEq(safeColor('#e10600'), '#e10600');
+  assertEq(safeColor('#11223344'), '#11223344');
+  assertEq(safeColor('red'), '#64748b');
+  assertEq(safeColor('rgb(1,2,3)'), '#64748b');
+  assertEq(safeColor(null), '#64748b');
+  assertEq(safeColor('javascript:alert(1)'), '#64748b');
+  assertEq(safeColor('red', '#000'), '#000');
+});
+
+test('esc neutralizza HTML', () => {
+  const imgTag = '<img src=x onerror=alert(1)>';
+  assertEq(esc(imgTag), '&lt;img src=x onerror=alert(1)&gt;');
+  assertEq(esc('&'), '&amp;');
+  assertEq(esc(null), '');
+});
+
+test('applyLuxuryTax non tocca budget sotto il cap', () => {
+  assertEq(applyLuxuryTax(100), 100);
+  assertEq(applyLuxuryTax(135), 135);
+});
+
+test('applyLuxuryTax applica 50% sull\'eccedenza', () => {
+  assertEq(applyLuxuryTax(185), 160);
+  assertEq(applyLuxuryTax(235), 185);
+});
+
+test('rdOverCapMultiplier = 1 sotto il cap', () => {
+  assertEq(rdOverCapMultiplier(100), 1);
+  assertEq(rdOverCapMultiplier(135), 1);
+});
+
+test('rdOverCapMultiplier cresce sopra il cap', () => {
+  const m1 = rdOverCapMultiplier(150);
+  assert(m1 > 1 && m1 < 2, 'moltiplicatore fuori range: ' + m1);
+  assertClose(rdOverCapMultiplier(270), 2.0, 0.01);
+});
+
+test('computeOVR pesa velocità 45%, costanza 30%, gomme 25%', () => {
+  assertEq(computeOVR(80, 60, 40), 64);
+  assertEq(computeOVR(100, 100, 100), 100);
+});
+
+test('setupBonusFor: assetto giusto +3, sbagliato -2, bilanciato +1', () => {
+  assertEq(setupBonusFor('aero', 'twisty'), 3);
+  assertEq(setupBonusFor('aero', 'power'), -2);
+  assertEq(setupBonusFor('bal', 'twisty'), 1);
+  assertEq(setupBonusFor('top', 'power'), 3);
+  assertEq(setupBonusFor('top', 'twisty'), -2);
+});
+
+test('setupBonusFor: assetto sconosciuto = 0', () => {
+  assertEq(setupBonusFor('nonexistent', 'twisty'), 0);
+});
+
+test('pickAvailableStrategies: asciutto dà strategie dry', () => {
+  const arr = pickAvailableStrategies('Asciutto');
+  assertEq(arr.length, 3);
+  assert(arr.every(s => s.id !== 'inter' && s.id !== 'wet'), 'trovate strategie wet');
+});
+
+test('pickAvailableStrategies: pioggia dà strategie wet', () => {
+  const arr = pickAvailableStrategies('Pioggia');
+  assertEq(arr.length, 2);
+});
+
+test('applyStrategyEffect: inter su Variabile bonus positivo', () => {
+  const r = applyStrategyEffect('inter', 'Variabile', 'balanced', 70);
+  assert(r.bonus > 0, 'atteso positivo, ottenuto ' + r.bonus);
+});
+
+test('applyStrategyEffect: wet su Variabile forte malus', () => {
+  const r = applyStrategyEffect('wet', 'Variabile', 'balanced', 70);
+  assert(r.bonus < -4, 'atteso < -4, ottenuto ' + r.bonus);
+});
+
+test('applyStrategyEffect: gestione gomme alta riduce il malus', () => {
+  const low = applyStrategyEffect('1stop_soft_hard', 'Asciutto', 'balanced', 30);
+  const high = applyStrategyEffect('1stop_soft_hard', 'Asciutto', 'balanced', 90);
+  assert(high.bonus > low.bonus, 'tyres alte dovrebbero migliorare il bonus');
+});
+
+test('rollRegulationDelta: delta entro il range della strategia (team sotto soglia)', () => {
+  seedRng(1);
+  const team = { car: 70 };
+  for (const id of ['rev','bal','scommessa','cons']) {
+    const s = REGULATION_STRATEGIES[id];
+    for (let i = 0; i < 50; i++) {
+      const { delta } = rollRegulationDelta(id, team);
+      assert(delta >= s.deltaMin - 0.001 && delta <= s.deltaMax + 0.001,
+        id + ' delta fuori range: ' + delta);
+    }
+  }
+});
+
+test('rollRegulationDelta: rev su top team può floppare (~18%)', () => {
+  seedRng(42);
+  const team = { car: 90 };
+  let flopped = 0;
+  for (let i = 0; i < 1000; i++) {
+    if (rollRegulationDelta('rev', team).flop) flopped++;
+  }
+  assert(flopped > 100 && flopped < 300, 'flop rate: ' + flopped + '/1000 (atteso ~180)');
+});
+
+test('rollRegulationDelta: rev su team di fascia media/bassa non floppa', () => {
+  seedRng(42);
+  const team = { car: 65 };
+  let flopped = 0;
+  for (let i = 0; i < 500; i++) {
+    if (rollRegulationDelta('rev', team).flop) flopped++;
+  }
+  assertEq(flopped, 0);
+});
+
+test('regolamento: dopo la compressione i top team superano la soglia del flop', () => {
+  withTestState(() => {
+    applyRegulationCompression();
+    assert(S.teams.some(t => t.car > REG_FLOP_CAR_THRESHOLD),
+      'nessun team sopra la soglia di flop dopo la compressione: il flop sarebbe irraggiungibile');
+  });
+});
+
+test('migrateSave: rifiuta dati non validi', () => {
+  assertEq(migrateSave(null), null);
+  assertEq(migrateSave({}), null);
+  assertEq(migrateSave({ player: {}, teams: [], drivers: [] }), null);
+});
+
+test('migrateSave: accetta save legacy e migra hallOfFame', () => {
+  withTestState(() => {
+    const legacy = JSON.parse(JSON.stringify(S));
+    delete legacy.regulationPending;
+    delete legacy.regulationHistory;
+    delete legacy.regulationSnapshot;
+    delete legacy.lastRegulationInfo;
+    delete legacy.hallOfFamePiloti;
+    delete legacy.hallOfFameCostruttori;
+    legacy.hallOfFame = [{ year: 2025, driverName: 'Test', playerWon: false }];
+    const mig = migrateSave(legacy);
+    assert(mig !== null, 'migrazione fallita');
+    assert(Array.isArray(mig.hallOfFamePiloti), 'manca hallOfFamePiloti');
+    assertEq(mig.hallOfFame, undefined, 'hallOfFame non rimosso');
+    assertEq(mig.regulationPending, false);
+    assert(Array.isArray(mig.regulationHistory));
+  });
+});
+
+test('migrateSave: normalizza colori non sicuri', () => {
+  withTestState(() => {
+    const raw = JSON.parse(JSON.stringify(S));
+    raw.teams[0].color = 'javascript:alert(1)';
+    const mig = migrateSave(raw);
+    assertEq(mig.teams[0].color, '#64748b');
+  });
+});
+
+test('migrateSave: completa la telemetria di un save vecchio', () => {
+  withTestState(() => {
+    const raw = JSON.parse(JSON.stringify(S));
+    raw.telemetry = { seasonsSimulated: 3 };
+    const mig = migrateSave(raw);
+    assertEq(mig.telemetry.seasonsSimulated, 3);
+    assertEq(typeof mig.telemetry.budgetSumByTeam, 'object');
+    assertEq(typeof mig.telemetry.weatherCounts, 'object');
+    const saved = S; S = mig;
+    try { trackSeasonTelemetry(driverStandings(), teamStandings()); } finally { S = saved; }
+  });
+});
+
+test('newCareer: 22 piloti e 11 team', () => {
+  withTestState(() => {
+    assertEq(S.drivers.length, 22);
+    assertEq(S.teams.length, 11);
+    assert(S.drivers.some(d => d.isPlayer), 'manca il pilota del giocatore');
+    assert(S.teams.every(t => t.rdSkill >= 0.2 && t.rdSkill <= 1.0), 'rdSkill fuori range');
+  });
+});
+
+test('newCareer: ogni team ha esattamente 2 piloti', () => {
+  withTestState(() => {
+    S.teams.forEach(t => {
+      const cnt = S.drivers.filter(d => d.teamId === t.id).length;
+      assertEq(cnt, 2, 'team ' + t.id + ' ha ' + cnt + ' piloti');
+    });
+  });
+});
+
+test('newCareer: nome pilota di 31 caratteri non viene troncato', () => {
+  const c = newCareer({ first: 'A'.repeat(14), last: 'B'.repeat(16), nat: '🇮🇹', age: 20,
+    speed: 55, consistency: 55, tyres: 55, teamId: 'cad' });
+  assertEq(c.player.name.length, 31);
+});
+
+test('creazione pilota: i default rispettano il pool di punti', () => {
+  openCreate();
+  assert(draft.speed + draft.consistency + draft.tyres <= ATTR_POOL,
+    'i default superano il pool: ' + (draft.speed + draft.consistency + draft.tyres));
+  draft = null;
+});
+
+test('simQualifying: griglia di 22 piloti distinti', () => {
+  withTestState(() => {
+    simQualifying();
+    assertEq(S.grid.length, 22);
+    assertEq(new Set(S.grid).size, 22, 'duplicati nella griglia');
+  });
+});
+
+test('simRace: solo top 10 prende punti', () => {
+  withTestState(() => {
+    S.drivers.forEach(d => { d.pts = 0; d.wins = 0; d.podiums = 0; d.dnf = 0; });
+    simQualifying();
+    simRace();
+    const racers = S.lastRace.filter(r => !r.dnf);
+    racers.forEach((r, i) => {
+      if (i < 10) assertEq(r.points, POINTS[i]);
+      else assertEq(r.points, 0);
+    });
+  });
+});
+
+test('simRace: somma punti assegnati = 101', () => {
+  withTestState(() => {
+    S.drivers.forEach(d => { d.pts = 0; d.wins = 0; d.podiums = 0; d.dnf = 0; });
+    S.round = 0;
+    simQualifying();
+    simRace();
+    const sumPts = S.drivers.reduce((s, d) => s + d.pts, 0);
+    const expected = POINTS.reduce((s, p) => s + p, 0);
+    assertEq(sumPts, expected, 'somma punti');
+  });
+});
+
+test('endSeason: incrementa totals correttamente', () => {
+  withTestState(() => {
+    const seasonsBefore = S.totals.seasons;
+    const racesBefore = S.totals.races;
+    for (let i = 0; i < CALENDAR.length; i++) {
+      S.round = i;
+      simQualifying();
+      simRace();
+    }
+    endSeason();
+    assertEq(S.totals.seasons, seasonsBefore + 1);
+    assertEq(S.totals.races, racesBefore + CALENDAR.length);
+  });
+});
+
+test('applyPlayerProgression: OVR non supera 99', () => {
+  withTestState(() => {
+    const p = S.player;
+    p.speed = 95; p.consistency = 95; p.tyres = 95;
+    applyPlayerProgression(p, { speedDelta: 20, consDelta: 20, tyreDelta: 20 });
+    assert(p.speed <= 99 && p.consistency <= 99 && p.tyres <= 99);
+  });
+});
+
+test('applyPlayerProgression: OVR non scende sotto 30', () => {
+  withTestState(() => {
+    const p = S.player;
+    p.speed = 35; p.consistency = 35; p.tyres = 35;
+    applyPlayerProgression(p, { speedDelta: -100, consDelta: -100, tyreDelta: -100 });
+    assertEq(p.speed, 30);
+    assertEq(p.consistency, 30);
+    assertEq(p.tyres, 30);
+  });
+});
+
+test('applyPlayerProgression: i decimali si accumulano tra le stagioni', () => {
+  withTestState(() => {
+    const p = S.player;
+    p.speed = 60; p.consistency = 60; p.tyres = 60;
+    p.speedFrac = 0; p.consFrac = 0; p.tyresFrac = 0;
+    applyPlayerProgression(p, { speedDelta: 0.4, consDelta: 0, tyreDelta: 0 });
+    assertEq(p.speed, 60, 'primo +0.4 non ancora convertito');
+    applyPlayerProgression(p, { speedDelta: 0.4, consDelta: 0, tyreDelta: 0 });
+    assertEq(p.speed, 61, 'due +0.4 devono dare +1');
+  });
+});
+
+/* Soglia allargata a <= -1 (anziché < -1) per essere robusta a lievi
+   variazioni del seed/parametri RNG. */
+test('calculatePlayerProgression: un veterano forte in declino cala davvero', () => {
+  withTestState(() => {
+    const p = S.player;
+    p.age = 38; p.ovr = 85;
+    S.seasonLog = [];
+    const pr = calculatePlayerProgression(p, null, 15, false);
+    assert(pr.speedDelta <= -1, 'atteso calo marcato, ottenuto ' + pr.speedDelta);
+  });
+});
+
+test('applyRD: rifiuta con budget insufficiente', () => {
+  withTestState(() => {
+    const team = playerTeam();
+    const res = applyRD(team, 'agg', 'aero', { budgetRef: { value: 0 } });
+    assertEq(res.ok, false);
+    assertEq(res.reason, 'budget');
+  });
+});
+
+test('applyRD: scala il budget al costo effettivo', () => {
+  withTestState(() => {
+    const team = playerTeam();
+    team.car = 70;
+    const budgetRef = { value: 500 };
+    const cost = rdEffectiveCost('bal', team.car, 500);
+    const res = applyRD(team, 'bal', 'aero', { budgetRef });
+    if (res.ok) assertEq(budgetRef.value, 500 - cost);
+  });
+});
+
+test('pacchetti R&D: profili di rischio diversi', () => {
+  const aero  = rdEffectiveFail('bal', 70, 0.6, 'aero', 0);
+  const power = rdEffectiveFail('bal', 70, 0.6, 'power', 0);
+  const chass = rdEffectiveFail('bal', 70, 0.6, 'chass', 0);
+  assert(aero > power && power > chass, 'ordine di rischio atteso aero > power > chass');
+});
+
+test('pacchetto sim: abbassa il rischio dei successivi sviluppi e si consuma', () => {
+  withTestState(() => {
+    const team = playerTeam();
+    team.budgetNow = 1000;
+    const base = rdEffectiveFail('bal', team.car, team.rdSkill, 'power', 0);
+    applyRD(team, 'cons', 'sim');
+    assertEq(team.simCharges, SIM_BUFF_CHARGES);
+    const buffed = rdEffectiveFail('bal', team.car, team.rdSkill, 'power', team.simCharges);
+    assert(buffed < base, 'rischio non ridotto dal simulatore');
+    applyRD(team, 'cons', 'power');
+    assertEq(team.simCharges, SIM_BUFF_CHARGES - 1);
+  });
+});
+
+test('invarianti: OK dopo una stagione completa', () => {
+  withTestState(() => {
+    for (let i = 0; i < CALENDAR.length; i++) {
+      S.round = i;
+      simQualifying();
+      simRace();
+    }
+    const issues = debugInvariants();
+    assertEq(issues.length, 0, 'violazioni: ' + issues.join(' | '));
+  });
+});
+
+test('S è serializzabile in JSON', () => {
+  withTestState(() => {
+    const s = JSON.stringify(S);
+    assert(s.length > 100, 'JSON troppo corto');
+  });
+});
+
+function runAllTests() {
+  const results = [];
+  const t0 = performance.now();
+  IO_SUSPENDED = true;
+  try {
+    for (const t of TESTS) {
+      try {
+        t.fn();
+        results.push({ name: t.name, ok: true });
+      } catch (e) {
+        results.push({ name: t.name, ok: false, err: (e && e.message) || String(e) });
+      }
+    }
+  } finally {
+    IO_SUSPENDED = false;
+  }
+  const dur = Math.round(performance.now() - t0);
+  return {
+    results,
+    dur,
+    passed: results.filter(r => r.ok).length,
+    total: results.length
+  };
+}
+
+function renderTestResults(results, passed, total, dur) {
+  const allOk = passed === total;
+  app.innerHTML = `
+    <div class="anim max-w-3xl mx-auto">
+      <h1 class="text-3xl font-black mb-2">🧪 Test Suite</h1>
+      <p class="text-slate-400 text-sm mb-5">${total} test • ${dur}ms</p>
+
+      <div class="mb-5 p-4 rounded-2xl border ${allOk ? 'bg-emerald-600/15 border-emerald-600/40' : 'bg-racing/15 border-racing/40'}">
+        <div class="text-3xl font-black ${allOk ? 'text-emerald-400' : 'text-racing'}">${passed} / ${total}</div>
+        <div class="text-sm text-slate-300 mt-1">${allOk ? '✅ Tutti i test passati' : '❌ Alcuni test falliti'}</div>
+      </div>
+
+      <div class="space-y-1 max-h-[60vh] overflow-y-auto pr-1">
+        ${results.map(r => `
+          <div class="flex items-start gap-3 p-3 rounded-xl bg-carbon2">
+            <span class="text-lg shrink-0">${r.ok ? '✅' : '❌'}</span>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm break-words ${r.ok ? 'text-slate-200' : 'text-white font-semibold'}">${esc(r.name)}</div>
+              ${r.ok ? '' : `<div class="text-xs text-racing mt-1 break-words font-mono">${esc(r.err || '')}</div>`}
+            </div>
+          </div>`).join('')}
+      </div>
+
+      <button type="button" data-action="menu-back"
+        class="mt-5 w-full py-4 rounded-2xl bg-racing neon font-black active:scale-[.98] transition">
+        ← Torna al menu
+      </button>
+    </div>`;
+}
+
+/* =========================================================================
+   ============================ EVENT DELEGATION ===========================
+   ========================================================================= */
+
+const ACTIONS = {
+  'menu-back': () => { S = null; render(); },
+  'career-continue': () => continueCareer(),
+  'career-new': () => openCreate(),
+  'career-wipe': () => {
+    askConfirm('Cancellare definitivamente il salvataggio?', () => { wipe(); render(); },
+      { yes: 'Elimina', danger: true });
+  },
+  'career-abandon': () => {
+    askConfirm('Abbandonare la carriera e tornare al menu?\nI progressi sono già salvati.',
+      () => { flushSave(true); S = null; render(); },
+      { yes: 'Esci al menu' });
+  },
+  'career-wipe-restart': () => { wipe(); S = null; render(); },
+
+  'create-step1': () => createStep1(),
+  'create-step2': () => createStep2(),
+  'create-back1': () => { draft.step = 1; renderCreate(); },
+  'create-back2': () => { draft.step = 2; renderCreate(); },
+  'create-finish': () => createFinish(),
+  'create-team': (d) => { draft.teamId = d.teamId; renderCreate(); },
+
+  'hub-tab': (d) => { S.tab = d.tab; scheduleSave(0); render(); },
+
+  'sponsor-pick': (d) => chooseSponsor(d.sponsorId),
+  'rd-run': (d) => doRD(d.pkg, d.strat),
+  'rd-close': () => { S.rdOpen = false; scheduleSave(0); render({ resetScroll: false }); },
+
+  'go-setup': () => goSetup(),
+  'pick-setup': (d) => chooseSetup(d.setupId),
+  'go-strategy': () => goStrategy(),
+  'pick-strategy': (d) => chooseStrategy(d.stratId),
+  'after-race': () => afterRace(),
+  'quick-season': () => quickSeason(),
+
+  'season-end': () => { S.screen = 'seasonEnd'; scheduleSave(0); render(); },
+  'season-eval': () => endSeason(),
+  'new-season': () => startNewSeason(),
+  'market-pick': (d) => confirmAcceptOffer(+d.offerIndex),
+  'regulation-pick': (d) => applyPlayerRegulationChoice(d.approachId),
+
+  'render-retry-hub': () => { if (S) { S.screen = 'hub'; S.tab = 'race'; render(); } else render(); },
+  'render-retry-menu': () => { S = null; render(); },
+
+  'attr-slider': (d, el) => {
+    const key = d.attrKey;
+    if (key !== 'speed' && key !== 'consistency' && key !== 'tyres') return;
+    draft[key] = +el.value;
+    const v = document.getElementById('v_' + key);
+    if (v) v.textContent = el.value;
+    const ovr = document.getElementById('ovrPrev');
+    if (ovr) ovr.textContent = computeOVR(draft.speed, draft.consistency, draft.tyres);
+    const left = document.getElementById('pointsLeft');
+    if (left) {
+      const rem = ATTR_POOL - (draft.speed + draft.consistency + draft.tyres);
+      left.textContent = rem;
+      left.className = 'text-2xl font-black ' + (rem < 0 ? 'text-racing' : rem === 0 ? 'text-emerald-400' : 'text-gold');
+    }
+  },
+  'age-slider': (d, el) => {
+    const lbl = document.getElementById('ageLbl');
+    if (lbl) lbl.textContent = el.value;
+    const inp = document.getElementById('fAge');
+    if (inp) inp.setAttribute('aria-valuenow', el.value);
+  }
+};
+
+function _dispatchAction(name, dataset, el, event) {
+  const fn = ACTIONS[name];
+  if (!fn) { console.warn('Azione sconosciuta:', name); return; }
+  fn(dataset, el, event);
+}
+
+app.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (!el || !app.contains(el)) return;
+  if (el.disabled) return;
+  _dispatchAction(el.dataset.action, el.dataset, el, e);
+});
+
+app.addEventListener('input', e => {
+  const el = e.target.closest('[data-action-input]');
+  if (!el || !app.contains(el)) return;
+  _dispatchAction(el.dataset.actionInput, el.dataset, el, e);
+});
+
+function activateTab(btn) {
+  const id = btn.id;
+  btn.click();
+  const fresh = id ? document.getElementById(id) : null;
+  if (fresh) fresh.focus({ preventScroll: true });
+}
+
+app.addEventListener('keydown', e => {
+  const tabBtn = e.target.closest('[role="tab"]');
+  if (!tabBtn) return;
+  const tablist = tabBtn.closest('[data-tablist]');
+  if (!tablist) return;
+  const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+  const idx = tabs.indexOf(tabBtn);
+  if (idx < 0) return;
+
+  let next = -1;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (idx + 1) % tabs.length;
+  else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (idx - 1 + tabs.length) % tabs.length;
+  else if (e.key === 'Home') next = 0;
+  else if (e.key === 'End') next = tabs.length - 1;
+  else if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    activateTab(tabBtn);
+    return;
+  } else {
+    return;
+  }
+
+  e.preventDefault();
+  activateTab(tabs[next]);
+});
+
+/* =========================================================================
+   ============================ BOOTSTRAP ==================================
+   ========================================================================= */
+
+S = null;
+
+const IS_TEST_MODE = new URLSearchParams(location.search).has('test');
+const IS_DEBUG = new URLSearchParams(location.search).has('debug');
+
+if (IS_DEBUG) {
+  window.debugInvariants       = debugInvariants;
+  window.debugTelemetry        = debugTelemetry;
+  window.debugCarDistribution  = debugCarDistribution;
+  window.debugBudgetCap        = debugBudgetCap;
+  window.debugRegulation       = debugRegulation;
+  window.debugForceRegulation  = debugForceRegulation;
+  window.debugResetTelemetry   = debugResetTelemetry;
+  window.runAllTests           = runAllTests;
+  window.getState              = () => S;
+}
+
+if (IS_TEST_MODE) {
+  setTimeout(() => {
+    const { results, passed, total, dur } = runAllTests();
+    console.log(`🧪 Test: ${passed}/${total} passati in ${dur}ms`);
+    results.filter(r => !r.ok).forEach(r => console.warn('  ❌ ' + r.name + ' — ' + r.err));
+    renderTestResults(results, passed, total, dur);
+  }, 50);
+} else {
+  render();
+}
+
+/* Salvataggio alla chiusura: beforeunload/pagehide forzano sempre (una sola
+   volta); visibilitychange scrive solo se c'è qualcosa di dirty. */
+window.addEventListener('beforeunload', () => { if (S) flushSave(true); });
+window.addEventListener('pagehide', () => { if (S) flushSave(true); });
+document.addEventListener('visibilitychange', () => { if (document.hidden && S) flushSave(false); });
+
+</script>
+</body>
+</html>
