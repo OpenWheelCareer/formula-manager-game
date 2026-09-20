@@ -518,7 +518,14 @@ const SETUPS = [
   { id:'wet',  name:'Assetto Meteo Incerto',     icon:'🌦️', desc:'Configurazione flessibile: rende quando il meteo si complica, costa qualcosa sull\'asciutto.',
     good:null, bad:null, weatherBonus:{ Asciutto:-0.5, Variabile:2.5, Pioggia:3 } }
 ];
-
+/* v24: scelta assetto automatica per la quick-sim, coerente col meteo reale */
+function pickAutoSetupId(circuit, weather) {
+  // Con meteo incerto o pioggia l'assetto dedicato è quasi sempre la scelta migliore
+  if (weather && (weather.name === 'Pioggia' || weather.name === 'Variabile')) return 'wet';
+  if (circuit.type === 'twisty') return 'aero';
+  if (circuit.type === 'power')  return 'top';
+  return 'bal';
+}
 function setupBonusFor(setupId, circuitType, weatherName) {
   const s = SETUPS.find(x => x.id === setupId);
   if (!s) return 0;
@@ -580,14 +587,14 @@ function asphaltTempEffect(stratId, asphaltTemp) {
 }
 
 /* Etichetta leggibile per la UI */
-function asphaltTempLabel(t) {
-  if (!Number.isFinite(t)) return { label: '—', cls: 'text-slate-400' };
-  if (t >= 45) return { label: t('temp.blazing'), cls: 'text-racing' };
-  if (t >= 38) return { label: t('temp.hot'),     cls: 'text-gold' };
-  if (t >= 30) return { label: t('temp.warm'),    cls: 'text-amber-300' };
-  if (t >= 22) return { label: t('temp.mild'),    cls: 'text-emerald-400' };
-  if (t >= 15) return { label: t('temp.cool'),    cls: 'text-sky-300' };
-  return              { label: t('temp.cold'),    cls: 'text-sky-500' };
+function asphaltTempLabel(tempC) {
+  if (!Number.isFinite(tempC)) return { label: '—', cls: 'text-slate-400' };
+  if (tempC >= 45) return { label: t('temp.blazing'), cls: 'text-racing' };
+  if (tempC >= 38) return { label: t('temp.hot'),     cls: 'text-gold' };
+  if (tempC >= 30) return { label: t('temp.warm'),    cls: 'text-amber-300' };
+  if (tempC >= 22) return { label: t('temp.mild'),    cls: 'text-emerald-400' };
+  if (tempC >= 15) return { label: t('temp.cool'),    cls: 'text-sky-300' };
+  return                   { label: t('temp.cold'),    cls: 'text-sky-500' };
 }
 const STRATEGIES_DRY = [
   { id:'1stop_soft_hard',      name:'1-Stop Soft → Hard',             icon:'🟥',
@@ -3993,7 +4000,7 @@ function generateOffers(lastSeasonPos) {
       const role = ovrFit > 6 ? ROLE_FIRST
                  : ovrFit > -3 ? ROLE_STD
                  : ROLE_SECOND;
-           const years  = isUpgrade ? irnd(2, 3) : irnd(1, 2);
+               const years  = isUpgrade ? irnd(2, 3) : irnd(1, 2);
       const salary = Math.round(clamp(
         (p.ovr - 55) * 0.35
         + t.prestige * 0.08
@@ -4007,7 +4014,6 @@ function generateOffers(lastSeasonPos) {
 
   return offers.sort((a, b) => b.interest - a.interest).slice(0, 5);
 }
-
 function confirmAcceptOffer(offerIndex) {
   if (!S || !S.offers) return;
   const offer = S.offers[offerIndex];
@@ -5759,9 +5765,12 @@ function completeQualifying() {
   save(); render();
 }
 
-function simQualifying() {
-  S.weather = pickWeather();
-   S.asphaltTemp = rollAsphaltTemp(); 
+function simQualifying(opts = {}) {
+  if (!opts.keepWeather) {
+    S.weather = pickWeather();
+    S.asphaltTemp = rollAsphaltTemp();
+    S.asphaltTemp = applyWeatherToAsphalt(S.asphaltTemp, S.weather.name);
+  }
   S.quali = {
     session: 0, sessions: {}, playerPos: {}, commentary: {},
     status: 'running', eliminatedIn: null, finalPos: null,
@@ -6948,13 +6957,20 @@ async function _runQuickSeason(totalRaces) {
 
   try {
     while (S.round < CALENDAR.length) {
-      const circuit = CALENDAR[S.round];
-      const autoId = circuit.type === 'twisty' ? 'aero' : circuit.type === 'power' ? 'top' : 'bal';
-      S.setupBonus = setupBonusFor(autoId, circuit.type, 'Asciutto');
-      S.setupLabel = SETUPS.find(s => s.id === autoId).name;
+  const circuit = CALENDAR[S.round];
 
-      simQualifying();
-      if (isSprintWeekend()) simSprint();
+  /* v24: estrai prima meteo e temperatura, poi scegli l'assetto coerente.
+     Così setup, mescole e DNF usano tutti lo stesso meteo reale. */
+  S.weather = pickWeather();
+  S.asphaltTemp = rollAsphaltTemp();
+  S.asphaltTemp = applyWeatherToAsphalt(S.asphaltTemp, S.weather.name);
+
+  const autoId = pickAutoSetupId(circuit, S.weather);
+  S.setupBonus = setupBonusFor(autoId, circuit.type, S.weather.name);
+  S.setupLabel = SETUPS.find(s => s.id === autoId).name;
+
+  simQualifying({ keepWeather: true });   // ← non ri-estrae il meteo
+  if (isSprintWeekend()) simSprint();
 
       const stratOpts = pickAvailableStrategies(S.weather.name);
       const autoStrat = stratOpts[irnd(0, stratOpts.length - 1)];
@@ -7264,6 +7280,7 @@ function viewProgress() {
 function viewMarket() {
   const p = S.player;
   const regulationComing = S.year % REGULATION_PERIOD === 0;
+  const offers = Array.isArray(S.offers) ? S.offers : [];
 
   return `
   <div class="anim">
@@ -7294,9 +7311,13 @@ function viewMarket() {
       <span class="text-lg font-black text-gold">${S.reputation}/100</span>
     </div>
 
-    <div class="space-y-3">
-      ${S.offers.map((o, i) => {
+       <div class="space-y-3">
+      ${offers.length === 0 ? `
+      <div class="bg-carbon2 rounded-2xl p-6 neon-soft text-center text-slate-400 text-sm">
+        Nessuna offerta disponibile.
+      </div>` : offers.map((o, i) => {
         const team = teamById(o.teamId);
+        if (!team) return '';   // difesa extra: offerta orfana
         return `
         <button type="button" data-action="market-pick" data-offer-index="${i}"
           class="w-full text-left p-4 rounded-2xl bg-carbon2 neon-soft border-2 border-transparent hover:border-racing active:scale-[.98] transition">
@@ -7822,7 +7843,43 @@ test('sanitizeName gestisce null/undefined', () => {
   assertEq(sanitizeName(undefined), '');
   assertEq(sanitizeName(0), '0');
 });
+test('quick-sim: setup coerente col meteo reale (non più sempre Asciutto)', () => {
+  withTestState(() => {
+    seedRng(2024);
+    // Forzo un meteo piovoso forzando il clima per qualche iterazione
+    let seenWetSetup = false;
+    for (let i = 0; i < 50 && !seenWetSetup; i++) {
+      // simulo il primo passo del quick-sim manualmente
+      S.round = 0;
+      S.weather = pickWeather();
+      if (S.weather.name === 'Pioggia' || S.weather.name === 'Variabile') {
+        const autoId = pickAutoSetupId(CALENDAR[0], S.weather);
+        if (autoId === 'wet') seenWetSetup = true;
+      }
+    }
+    assert(seenWetSetup, 'con meteo incerto/pioggia il quick-sim deve scegliere "wet"');
+  });
+});
 
+test('simQualifying({keepWeather:true}) non ri-estrae il meteo', () => {
+  withTestState(() => {
+    S.weather = { name: 'Pioggia', icon: '🌧️', chaos: 2.2 };
+    S.asphaltTemp = 20;
+    const before = { ...S.weather };
+    simQualifying({ keepWeather: true });
+    assertEq(S.weather.name, before.name, 'il meteo è stato sovrascritto');
+  });
+});
+
+test('viewMarket con offers=null non lancia eccezioni', () => {
+  withTestState(() => {
+    S.offers = null;
+    S.screen = 'market';
+    // non dobbiamo crashare: la funzione è pura
+    const html = viewMarket();
+    assert(typeof html === 'string' && html.length > 50, 'viewMarket ha fallito');
+  });
+});
 test('safeColor accetta solo hex validi', () => {
   assertEq(safeColor('#fff'), '#fff');
   assertEq(safeColor('#e10600'), '#e10600');
@@ -8543,7 +8600,19 @@ test('asphaltTempEffect: hard su asfalto freddo penalizza il passo', () => {
   assert(cold.paceMod < hot.paceMod, 'hard: cold deve essere peggio di hot');
   assert(cold.paceMod < 0, 'hard cold: paceMod atteso negativo');
 });
+test('viewMarket: markup bilanciato (apre e chiude lo stesso n° di div)', () => {
+  withTestState(() => {
+    S.offers = [{ teamId: 'cad', role: ROLE_STD, years: 2, salary: 5, interest: 1 }];
+    const html = viewMarket();
+    const open  = (html.match(/<div\b/g) || []).length;
+    const close = (html.match(/<\/div>/g) || []).length;
+    assertEq(open, close, `div sbilanciati: ${open} aperti, ${close} chiusi`);
 
+    S.offers = [];
+    const html2 = viewMarket();
+    assertEq((html2.match(/<div\b/g) || []).length, (html2.match(/<\/div>/g) || []).length);
+  });
+});
 test('asphaltTempEffect: fallback su strategia sconosciuta', () => {
   const eff = asphaltTempEffect('nonexistent', 30);
   assert(Number.isFinite(eff.wearMult) && Number.isFinite(eff.paceMod));
