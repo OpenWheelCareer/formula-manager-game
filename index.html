@@ -114,7 +114,7 @@
    ================================ CONFIG =================================
    ========================================================================= */
 
-const SAVE_VERSION = 22;
+const SAVE_VERSION = 23;
 const SLOT_COUNT = 3;
 const slotKey = n => 'f1_career_slot_' + n;
 const metaKey = n => 'f1_career_meta_' + n;
@@ -145,7 +145,7 @@ const RD_OVER_CAP_MAX_MULT = 2.0;
 
 const REGULATION_PERIOD = 5;
 const REGULATION_MEDIAN = 68;
-const REGULATION_COMPRESSION = 0.35;
+const REGULATION_COMPRESSION = 0.60;
 const REGULATION_NOISE = 0.8;
 const REG_FLOOR = Math.max(45, REGULATION_MEDIAN - 20);
 
@@ -191,11 +191,11 @@ const ROLE_SECOND = 'Seconda Guida';
 const ROLE_PACE = { [ROLE_FIRST]: 0.6, [ROLE_STD]: 0, [ROLE_SECOND]: -0.6 };
 
 const DIFFICULTIES = {
-  easy:   { name:'Rookie',   icon:'🟢', paceBonus: 0.8,  dnfMult: 0.7, progMult: 1.25, budgetMult: 1.15, fireOvr: 40,
+  easy:   { name:'Rookie',   icon:'🟢', paceBonus: 0.8,  dnfMult: 0.7, progMult: 1.08, budgetMult: 1.15, fireOvr: 40,
             desc:'Più ritmo, meno ritiri, crescita rapida, budget generoso.' },
-  normal: { name:'Pilota',   icon:'🟡', paceBonus: 0,    dnfMult: 1.0, progMult: 1.0,  budgetMult: 1.0,  fireOvr: 45,
+  normal: { name:'Pilota',   icon:'🟡', paceBonus: 0,    dnfMult: 1.0, progMult: 0.90, budgetMult: 1.0,  fireOvr: 45,
             desc:'L\'esperienza bilanciata di riferimento.' },
-  hard:   { name:'Campione', icon:'🔴', paceBonus: -0.8, dnfMult: 1.3, progMult: 0.85, budgetMult: 0.9,  fireOvr: 50,
+ hard:   { name:'Campione', icon:'🔴', paceBonus: -0.8, dnfMult: 1.3, progMult: 0.80, budgetMult: 0.9,  fireOvr: 50,
             desc:'Meno ritmo, più guasti, crescita lenta, licenziamento più facile.' }
 };
 const diff = () => DIFFICULTIES[(S && S.difficulty)] || DIFFICULTIES.normal;
@@ -223,12 +223,30 @@ const PACE_MODES = {
   save:   { id:'save',   name:'Gestione',   icon:'🧊', bonus: -0.5, wear: 8,  risk: -0.004,
             desc:'Perdi un po\' di passo ma arrivi fresco al finale.' }
 };
+/* ===== Temperatura asfalto & mescole (v23) ===== */
+const REF_ASPHALT_TEMP = 34;   /* °C di riferimento "neutro" */
+/* v24: variazione temperatura tra qualifica e gara (notturna vs diurna) */
+const NIGHT_GPS = new Set(['Las Vegas', 'Abu Dhabi', 'Qatar', 'Singapore', 'Bahrain', 'Arabia Saudita']);
+/* Profilo di mescola per ciascuna strategia: softness 0=dura, 1=morbida */
+const STRATEGY_COMPOUND = {
+  '1stop_soft_hard':     { softness: 0.65, label: 'Mix S/H' },
+  '2stop_soft_med_soft': { softness: 0.80, label: 'Soft-heavy' },
+  '1stop_hard_med':      { softness: 0.25, label: 'Hard-heavy' },
+  'inter':               { softness: 0.50, label: 'Intermedie' },
+  'wet':                 { softness: 0.35, label: 'Full Wet' }
+};
 const WEAR_PENALTY_START = 50;
 const WEAR_PENALTY_SLOPE = 0.12;
 const SC_PIT_COST = 0.6;
 const SC_PIT_WEAR_RELIEF = 40;
 const SC_STAY_BONUS = 0.8;
-
+/* v24: pit stop temporizzato — range di perdita tempo realistico */
+const PIT_TIME_LOSS_MIN = 19.5;   /* pit crew perfetta */
+const PIT_TIME_LOSS_MAX = 24.0;   /* pit crew lenta o traffico in corsia */
+const PIT_WEAR_RESET = 0.25;      /* quota di wear che resta dopo il pit */
+/* v24: cliff di degrado — sopra questa soglia il wear accelera */
+const WEAR_CLIFF_START = 70;
+const WEAR_CLIFF_MULT = 1.6;
 const SIM_TUNING = {
   qualiCarWeight: 0.65,
   qualiOvrWeight: 0.35,
@@ -278,17 +296,17 @@ const WEATHER_DEFS = {
    ========================================================================= */
 
 const TEAM_DB = [
-  { id:'mer', name:'Freccia d\'Argento',   short:'SIL', color:'#00d2be', car:87, prestige:96, budget:138, low:false, minCar:82 },
-  { id:'fer', name:'Cavallino Veloce',     short:'CAV', color:'#e10600', car:87, prestige:99, budget:140, low:false, minCar:80 },
-  { id:'mcl', name:'Horizon Racing',       short:'HRZ', color:'#ff8000', car:86, prestige:95, budget:140, low:false, minCar:78 },
-  { id:'rbr', name:'Apex Energy',          short:'APX', color:'#1b3d8f', car:84, prestige:94, budget:138, low:false, minCar:76 },
-  { id:'rbu', name:'Toro Motori',          short:'TOR', color:'#6692ff', car:78, prestige:64, budget:112, low:false, minCar:68, isSatellite:true, maxCar:79 },
-  { id:'alp', name:'Alpine Coast',         short:'ALP', color:'#0090ff', car:77, prestige:66, budget:115, low:true,  minCar:66 },
-  { id:'aud', name:'Scuderia Anelli',      short:'ANL', color:'#009b3a', car:75, prestige:70, budget:120, low:true,  minCar:64 },
-  { id:'has', name:'Vector Motorsport',    short:'VEC', color:'#b6babd', car:73, prestige:58, budget:108, low:true,  minCar:62, isSatellite:true, maxCar:79 },
-  { id:'wil', name:'Grove Heritage',       short:'GRV', color:'#00a0de', car:70, prestige:72, budget:118, low:true,  minCar:60 },
-  { id:'ast', name:'Green Peak GP',        short:'GPK', color:'#00594f', car:65, prestige:78, budget:132, low:true,  minCar:55 },
-  { id:'cad', name:'Detroit Star',         short:'DET', color:'#c9a227', car:60, prestige:52, budget:105, low:true,  minCar:50 }
+  { id:'mer', name:'Stella d\'Argento',    short:'STA', color:'#00d2be', car:87, prestige:96, budget:138, low:false, minCar:82 },
+  { id:'fer', name:'Cavallino Rosso',      short:'CAV', color:'#e10600', car:87, prestige:99, budget:140, low:false, minCar:80 },
+  { id:'mcl', name:'Papaya Motorsport',    short:'PAP', color:'#ff8000', car:86, prestige:95, budget:140, low:false, minCar:78 },
+  { id:'rbr', name:'Toro Energetico',      short:'TOR', color:'#1b3d8f', car:84, prestige:94, budget:138, low:false, minCar:76 },
+  { id:'rbu', name:'Toro Junior',          short:'TJR', color:'#6692ff', car:78, prestige:64, budget:112, low:false, minCar:68, isSatellite:true, maxCar:79 },
+  { id:'alp', name:'Alpine Bleu',          short:'ALP', color:'#0090ff', car:77, prestige:66, budget:115, low:true,  minCar:66 },
+  { id:'aud', name:'Audon', short:'AUD', color:'#009b3a', car:75, prestige:70, budget:120, low:true,  minCar:64 },
+  { id:'has', name:'Acciaio Americano',    short:'ACC', color:'#b6babd', car:73, prestige:58, budget:108, low:true,  minCar:62, isSatellite:true, maxCar:79 },
+  { id:'wil', name:'Williams Grove',       short:'WGR', color:'#00a0de', car:70, prestige:72, budget:118, low:true,  minCar:60 },
+  { id:'ast', name:'Verde Britannico',     short:'VRB', color:'#00594f', car:65, prestige:78, budget:132, low:true,  minCar:55 },
+  { id:'cad', name:'Cadillac Detroit',     short:'CAD', color:'#c9a227', car:60, prestige:52, budget:105, low:true,  minCar:50 }
 ];
 
 const AI_DRIVERS = [
@@ -317,32 +335,103 @@ const AI_DRIVERS = [
 ];
 
 const CALENDAR = [
-  { gp:'Australia',    circuit:'Melbourne',     flag:'🇦🇺', type:'balanced' },
-  { gp:'Cina',         circuit:'Shanghai',      flag:'🇨🇳', type:'balanced' },
-  { gp:'Giappone',     circuit:'Suzuka',        flag:'🇯🇵', type:'twisty' },
-  { gp:'Bahrain',      circuit:'Sakhir',        flag:'🇧🇭', type:'power' },
-  { gp:'Arabia Saudita',circuit:'Jeddah',        flag:'🇸🇦', type:'power' },
-  { gp:'Miami',        circuit:'Miami',         flag:'🇺🇸', type:'balanced' },
-  { gp:'Canada',       circuit:'Montreal',      flag:'🇨🇦', type:'balanced' },
-  { gp:'Monaco',       circuit:'Montecarlo',    flag:'🇲🇨', type:'twisty' },
-  { gp:'Spagna',       circuit:'Barcellona',    flag:'🇪🇸', type:'balanced' },
-  { gp:'Austria',      circuit:'Spielberg',     flag:'🇦🇹', type:'power' },
-  { gp:'Gran Bretagna',circuit:'Silverstone',   flag:'🇬🇧', type:'twisty' },
-  { gp:'Belgio',       circuit:'Spa',           flag:'🇧🇪', type:'power' },
-  { gp:'Ungheria',     circuit:'Hungaroring',   flag:'🇭🇺', type:'twisty' },
-  { gp:'Paesi Bassi',  circuit:'Zandvoort',     flag:'🇳🇱', type:'twisty' },
-  { gp:'Italia',       circuit:'Monza',         flag:'🇮🇹', type:'power' },
-  { gp:'Spagna (Madrid)',circuit:'Madring',     flag:'🇪🇸', type:'balanced' },
-  { gp:'Azerbaijan',   circuit:'Baku',          flag:'🇦🇿', type:'power' },
-  { gp:'Singapore',    circuit:'Marina Bay',    flag:'🇸🇬', type:'twisty' },
-  { gp:'Texas',        circuit:'Austin',        flag:'🇺🇸', type:'balanced' },
-  { gp:'Messico',      circuit:'Città del Messico', flag:'🇲🇽', type:'balanced' },
-  { gp:'Brasile',      circuit:'Interlagos',    flag:'🇧🇷', type:'balanced' },
-  { gp:'Las Vegas',    circuit:'Las Vegas',     flag:'🇺🇸', type:'power' },
-  { gp:'Qatar',        circuit:'Lusail',        flag:'🇶🇦', type:'power' },
-  { gp:'Abu Dhabi',    circuit:'Yas Marina',    flag:'🇦🇪', type:'balanced' }
+  { gp:'Australia',    circuit:'Melbourne',   flag:'🇦🇺', type:'balanced',
+    fullName:'Australian Grand Prix — Albert Park Circuit',
+    desc:'Tracciato semi-cittadino veloce, carico medio-basso. Frena poco, trazione in uscita dai tornanti lenti. Attenzione alla ghiaia vicino ai muretti.',
+    asphaltTemp:[24, 40] },
+  { gp:'Cina',         circuit:'Shanghai',    flag:'🇨🇳', type:'balanced',
+    fullName:'Chinese Grand Prix — Shanghai International Circuit',
+    desc:'Mix tecnico con la lunghissima curva 1-2 e il rettilineo infinito. Richiede assetto bilanciato: buona efficienza aero sui lunghi curvoni.',
+    asphaltTemp:[18, 34] },
+  { gp:'Giappone',     circuit:'Suzuka',      flag:'🇯🇵', type:'twisty',
+    fullName:'Japanese Grand Prix — Suzuka Circuit',
+    desc:'Otto figure, curve a esse e 130R. Carico aero alto, precisione millimetrica. Fondamentale la gomma anteriore sinistra.',
+    asphaltTemp:[16, 30] },
+  { gp:'Bahrain',      circuit:'Sakhir',      flag:'🇧🇭', type:'power',
+    fullName:'Bahrain Grand Prix — Bahrain International Circuit',
+    desc:'Pista da trazione e frenata: lunghi rettilinei e staccate violente. Serve efficienza meccanica e tenuta sulle posteriori.',
+    asphaltTemp:[28, 44] },
+  { gp:'Arabia Saudita',circuit:'Jeddah',     flag:'🇸🇦', type:'power',
+    fullName:'Saudi Arabian Grand Prix — Jeddah Corniche Circuit',
+    desc:'Cittadino velocissimo tra i muretti. Carico medio, tanta velocità di punta e precisione nei cambi di direzione ad alta velocità.',
+    asphaltTemp:[30, 46] },
+  { gp:'Miami',        circuit:'Miami',       flag:'🇺🇸', type:'balanced',
+    fullName:'Miami Grand Prix — Miami International Autodrome',
+    desc:'Tracciato misto con lunghi rettilinei e settore guidato. Asfalto spesso rovente: usura termica importante sulle morbide.',
+    asphaltTemp:[34, 50] },
+  { gp:'Canada',       circuit:'Montreal',    flag:'🇨🇦', type:'balanced',
+    fullName:'Canadian Grand Prix — Circuit Gilles-Villeneuve',
+    desc:'Stop&go tra i muretti con il "Wall of Champions". Frenate pesanti e trazione da bassa velocità. Meteo spesso instabile.',
+    asphaltTemp:[18, 34] },
+  { gp:'Monaco',       circuit:'Montecarlo',  flag:'🇲🇨', type:'twisty',
+    fullName:'Monaco Grand Prix — Circuit de Monaco',
+    desc:'Massimo carico aero, curve lente e grip meccanico. Sorpassi quasi impossibili: qualifica decisiva.',
+    asphaltTemp:[24, 40] },
+  { gp:'Spagna',       circuit:'Barcellona',  flag:'🇪🇸', type:'balanced',
+    fullName:'Spanish Grand Prix — Circuit de Barcelona-Catalunya',
+    desc:'Pista di riferimento per l\'aero: curva 3 e 9 mettono in crisi il carico. Usura anteriore sinistra elevata.',
+    asphaltTemp:[30, 46] },
+  { gp:'Austria',      circuit:'Spielberg',   flag:'🇦🇹', type:'power',
+    fullName:'Austrian Grand Prix — Red Bull Ring',
+    desc:'Corto e nervoso, tre staccate dure e curve in salita. Poca aero, tanta trazione in uscita.',
+    asphaltTemp:[22, 40] },
+  { gp:'Gran Bretagna',circuit:'Silverstone', flag:'🇬🇧', type:'twisty',
+    fullName:'British Grand Prix — Silverstone Circuit',
+    desc:'Le curve veloci (Copse, Maggotts, Becketts) esaltano il carico aero. Usura laterale severa, meteo spesso variabile.',
+    asphaltTemp:[14, 30] },
+  { gp:'Belgio',       circuit:'Spa',         flag:'🇧🇪', type:'power',
+    fullName:'Belgian Grand Prix — Circuit de Spa-Francorchamps',
+    desc:'Eau Rouge-Raidillon e Pouhon: serve compromesso tra carico ed efficienza. Meteo imprevedibile sulle Ardenne.',
+    asphaltTemp:[14, 30] },
+  { gp:'Ungheria',     circuit:'Hungaroring', flag:'🇭🇺', type:'twisty',
+    fullName:'Hungarian Grand Prix — Hungaroring',
+    desc:'Corto, tortuoso, sempre in curva. Massimo carico, trazione critica. Sorpassare è difficile, qualifica chiave.',
+    asphaltTemp:[30, 48] },
+  { gp:'Paesi Bassi',  circuit:'Zandvoort',   flag:'🇳🇱', type:'twisty',
+    fullName:'Dutch Grand Prix — Circuit Zandvoort',
+    desc:'Curve sopraelevate e settore guidato stretto. Carico alto, vento laterale può disturbare il bilanciamento.',
+    asphaltTemp:[18, 32] },
+  { gp:'Italia',       circuit:'Monza',       flag:'🇮🇹', type:'power',
+    fullName:'Italian Grand Prix — Autodromo Nazionale di Monza',
+    desc:'Tempio della velocità: alettoni scarichi, tanta efficienza. Le staccate di Rettifilo e Roggia stressano i freni.',
+    asphaltTemp:[24, 40] },
+  { gp:'Spagna (Madrid)',circuit:'Madring',   flag:'🇪🇸', type:'balanced',
+    fullName:'Madrid Grand Prix — Madring',
+    desc:'Tracciato nuovo, mix di curve veloci e tornanti lenti. Asfalto caldo, degrado termico importante.',
+    asphaltTemp:[30, 46] },
+  { gp:'Azerbaijan',   circuit:'Baku',        flag:'🇦🇿', type:'power',
+    fullName:'Azerbaijan Grand Prix — Baku City Circuit',
+    desc:'Il rettilineo più lungo del calendario e il castello strettissimo. Assetto scarico per la velocità, ma serve trazione nel settore vecchio.',
+    asphaltTemp:[24, 38] },
+  { gp:'Singapore',    circuit:'Marina Bay',  flag:'🇸🇬', type:'twisty',
+    fullName:'Singapore Grand Prix — Marina Bay Street Circuit',
+    desc:'Cittadino notturno, umidità altissima. Carico alto, trazione costante. Usura termica e fisica estrema per i piloti.',
+    asphaltTemp:[34, 50] },
+  { gp:'Texas',        circuit:'Austin',      flag:'🇺🇸', type:'balanced',
+    fullName:'United States Grand Prix — Circuit of the Americas',
+    desc:'Curve 2-10 in salita e la esse veloce finale. Compromesso tra carico e velocità di punta.',
+    asphaltTemp:[28, 44] },
+  { gp:'Messico',      circuit:'Città del Messico', flag:'🇲🇽', type:'balanced',
+    fullName:'Mexico City Grand Prix — Autódromo Hermanos Rodríguez',
+    desc:'Altopiano a 2.200 m: aria rarefatta, deportanza ridotta. Motori e freni in sofferenza.',
+    asphaltTemp:[22, 38] },
+  { gp:'Brasile',      circuit:'Interlagos',  flag:'🇧🇷', type:'balanced',
+    fullName:'São Paulo Grand Prix — Autódromo José Carlos Pace',
+    desc:'Tracciato corto e ondulato, con il Senna S e il rettilineo in salita. Meteo tropicale instabile.',
+    asphaltTemp:[28, 44] },
+  { gp:'Las Vegas',    circuit:'Las Vegas',   flag:'🇺🇸', type:'power',
+    fullName:'Las Vegas Grand Prix — Las Vegas Strip Circuit',
+    desc:'Gara notturna con temperature basse: difficile mandare in temperatura le gomme. Tanta velocità di punta e frenate pesanti.',
+    asphaltTemp:[14, 28] },
+  { gp:'Qatar',        circuit:'Lusail',      flag:'🇶🇦', type:'power',
+    fullName:'Qatar Grand Prix — Lusail International Circuit',
+    desc:'Curve veloci in sequenza. Carico medio-alto, usura laterale severa sulle anteriori.',
+    asphaltTemp:[24, 38] },
+  { gp:'Abu Dhabi',    circuit:'Yas Marina',  flag:'🇦🇪', type:'balanced',
+    fullName:'Abu Dhabi Grand Prix — Yas Marina Circuit',
+    desc:'Mix di curve lente e rettilinei. Gara spesso decisa ai box. Temperatura in calo col tramonto.',
+    asphaltTemp:[24, 38] }
 ];
-
 const TITLE_THRESHOLD_PER_RACE = TITLE_POINTS_THRESHOLD / CALENDAR.length;
 
 const NATIONS = [
@@ -448,20 +537,80 @@ function setupHint(s, circuitType) {
   if (b < 0)  return { label: 'Sconsigliato', cls: 'text-racing' };
   return { label: 'Neutro', cls: 'text-slate-400' };
 }
+/* Estrae la temperatura asfalto del weekend dal range del circuito corrente */
+function rollAsphaltTemp() {
+  const race = CALENDAR[S.round];
+  if (!race || !Array.isArray(race.asphaltTemp)) return REF_ASPHALT_TEMP;
+  const [min, max] = race.asphaltTemp;
+  /* distribuzione triangolare leggermente centrata verso il basso,
+     per non dare sempre il picco massimo del range */
+  const a = rnd(min, max);
+  const b = rnd(min, max);
+  return Math.round((a + b) / 2);
+}
+/* v24: shift termico tra qualifica e gara.
+   - Circuiti notturni: asfalto si raffredda in gara (sessione serale)
+   - Circuiti diurni: asfalto si scalda in gara (sole + gomme + motori) */
+function applySessionTempShift() {
+  if (!Number.isFinite(S.asphaltTemp)) return;
+  const race = CALENDAR[S.round];
+  if (!race) return;
+  const shift = NIGHT_GPS.has(race.gp) ? -rnd(3, 5) : +rnd(2, 4);
+  S.asphaltTemp = clamp(Math.round(S.asphaltTemp + shift), 8, 60);
+}
+/* Effetto combinato temperatura asfalto + mescola:
+   - wearMult: quanto l'asfalto amplifica/riduce l'usura
+   - paceMod: quanto penalizza/bonifica il passo (mescole dure al freddo, morbide al caldo estremo) */
+function asphaltTempEffect(stratId, asphaltTemp) {
+  const profile = STRATEGY_COMPOUND[stratId] || { softness: 0.5 };
+  const t = Number.isFinite(asphaltTemp) ? asphaltTemp : REF_ASPHALT_TEMP;
+  const delta = t - REF_ASPHALT_TEMP;
 
+  /* Usura: le morbide amplificano il caldo, le dure sono quasi indifferenti */
+  const wearMult = clamp(1 + delta * 0.018 * profile.softness, 0.62, 1.55);
+
+  /* Passo:
+     - asfalto freddo → le dure faticano a scaldarsi (penalità)
+     - asfalto rovente → le morbide si surriscaldano (ulteriore penalità) */
+  const coldPenalty = delta < 0 ? delta * 0.030 * (1 - profile.softness) : 0;
+  const hotPenalty  = delta > 14 ? -(delta - 14) * 0.022 * profile.softness : 0;
+  const paceMod = coldPenalty + hotPenalty;
+
+  return { wearMult, paceMod, profile };
+}
+
+/* Etichetta leggibile per la UI */
+function asphaltTempLabel(t) {
+  if (!Number.isFinite(t)) return { label:'—', cls:'text-slate-400' };
+  if (t >= 45) return { label:'Roventissimo',  cls:'text-racing' };
+  if (t >= 38) return { label:'Molto caldo',   cls:'text-gold' };
+  if (t >= 30) return { label:'Caldo',         cls:'text-amber-300' };
+  if (t >= 22) return { label:'Mite',          cls:'text-emerald-400' };
+  if (t >= 15) return { label:'Fresco',        cls:'text-sky-300' };
+  return               { label:'Freddo',       cls:'text-sky-500' };
+}
 const STRATEGIES_DRY = [
-  { id:'1stop_soft_hard',      name:'1-Stop (Morbida/Dura)',               icon:'🟥', desc:'Grande picco prestazionale nella prima parte di gara, con un calo contenuto nel finale (mitigato da una buona Gestione Gomme).' },
-  { id:'2stop_soft_med_soft', name:'2-Stop (Morbida/Media/Morbida)',      icon:'🟨', desc:'Passo gara molto aggressivo che ripaga la sosta extra, ma resta letale su piste tecniche.' },
-  { id:'1stop_hard_med',      name:'1-Stop Conservativa (Dura/Media)',    icon:'⬜', desc:'Nessun picco di prestazione, ma degrado ridotto: premia la costanza senza regalare il risultato.' }
+  { id:'1stop_soft_hard',      name:'1-Stop Soft → Hard',             icon:'🟥',
+    desc:'Grande picco prestazionale nella prima parte di gara, con un calo contenuto nel finale (mitigato da una buona Gestione Gomme).' },
+  { id:'2stop_soft_med_soft',  name:'2-Stop Soft → Medium → Soft',    icon:'🟨',
+    desc:'Passo gara molto aggressivo che ripaga la sosta extra, ma resta letale su piste tecniche.' },
+  { id:'1stop_hard_med',       name:'1-Stop Hard → Medium',           icon:'⬜',
+    desc:'Nessun picco di prestazione, ma degrado ridotto: premia la costanza senza regalare il risultato.' }
 ];
 
 const STRATEGIES_WET = [
-  { id:'inter', name:'Gomme Intermedie', icon:'🟩', desc:'Bonus eccellente su pista Variabile, ma malus se la pioggia si intensifica.' },
-  { id:'wet',   name:'Gomme Full Wet',   icon:'🟦', desc:'Bonus deciso su Pioggia battente, ma malus disastroso su pista solo Variabile.' }
+  { id:'inter', name:'Gomme Intermedie', icon:'🟩',
+    desc:'Bonus eccellente su pista Variabile, ma malus se la pioggia si intensifica.' },
+  { id:'wet',   name:'Gomme Full Wet',   icon:'🟦',
+    desc:'Bonus deciso su Pioggia battente, ma malus disastroso su pista solo Variabile.' }
 ];
 
+/* v24: su meteo Variabile il pilota vede TUTTE le opzioni (dry + wet).
+   La scelta è sua: fidarsi dell'asciutto o precauzionarsi sul bagnato. */
 function pickAvailableStrategies(weatherName) {
-  return weatherName === 'Asciutto' ? STRATEGIES_DRY : STRATEGIES_WET;
+  if (weatherName === 'Asciutto') return STRATEGIES_DRY;
+  if (weatherName === 'Pioggia')  return STRATEGIES_WET;
+  return [...STRATEGIES_DRY, ...STRATEGIES_WET];   /* Variabile */
 }
 
 function pickRandomStrategy(weatherName) {
@@ -470,24 +619,46 @@ function pickRandomStrategy(weatherName) {
 }
 
 function pickAIStrategy(weatherName, circuitType) {
-  const r = rng();
-  if (weatherName === 'Asciutto') {
-    if (circuitType === 'twisty') {
-      if (r < 0.50) return '1stop_hard_med';
-      if (r < 0.85) return '1stop_soft_hard';
-      return '2stop_soft_med_soft';
-    }
-    if (circuitType === 'power') {
-      if (r < 0.45) return '1stop_soft_hard';
-      if (r < 0.75) return '2stop_soft_med_soft';
-      return '1stop_hard_med';
-    }
-    if (r < 0.40) return '1stop_soft_hard';
-    if (r < 0.70) return '2stop_soft_med_soft';
-    return '1stop_hard_med';
+  if (weatherName !== 'Asciutto') {
+    const r = rng();
+    if (weatherName === 'Pioggia') return r < 0.70 ? 'wet' : 'inter';
+    return r < 0.60 ? 'inter' : 'wet';
   }
-  if (weatherName === 'Pioggia') return r < 0.70 ? 'wet' : 'inter';
-  return r < 0.60 ? 'inter' : 'wet';
+
+  /* v23: distribuzione base per tipo circuito */
+  let pHard, pSoftHard, pSoftMedSoft;
+  if (circuitType === 'twisty') {
+    pHard = 0.50; pSoftHard = 0.35; pSoftMedSoft = 0.15;
+  } else if (circuitType === 'power') {
+    pHard = 0.25; pSoftHard = 0.45; pSoftMedSoft = 0.30;
+  } else {
+    pHard = 0.30; pSoftHard = 0.40; pSoftMedSoft = 0.30;
+  }
+
+  /* v23: bias dalla temperatura asfalto
+     - asfalto caldo → sposta verso Hard (tengono meglio)
+     - asfalto freddo → sposta verso Soft (entrano prima in temperatura) */
+  const t = Number.isFinite(S && S.asphaltTemp) ? S.asphaltTemp : REF_ASPHALT_TEMP;
+  if (t >= 42) {
+    const shift = Math.min(0.25, (t - 40) * 0.030);
+    pHard += shift;
+    pSoftMedSoft = Math.max(0.05, pSoftMedSoft - shift * 0.60);
+    pSoftHard    = Math.max(0.05, 1 - pHard - pSoftMedSoft);
+  } else if (t <= 20) {
+    const shift = Math.min(0.25, (22 - t) * 0.030);
+    pSoftHard    += shift;
+    pSoftMedSoft += shift * 0.30;
+    pHard = Math.max(0.05, 1 - pSoftHard - pSoftMedSoft);
+  }
+
+  /* normalizza */
+  const sum = pHard + pSoftHard + pSoftMedSoft;
+  pHard /= sum; pSoftHard /= sum; pSoftMedSoft /= sum;
+
+  const r = rng();
+  if (r < pHard) return '1stop_hard_med';
+  if (r < pHard + pSoftHard) return '1stop_soft_hard';
+  return '2stop_soft_med_soft';
 }
 
 function applyStrategyEffect(stratId, weatherName, circuitType, tyres) {
@@ -579,7 +750,7 @@ const round3 = v => Math.round(v * 1000) / 1000;
 function sanitizeName(str, max) {
   const limit = Number.isInteger(max) && max > 0 ? max : NAME_MAX;
   return String(str == null ? '' : str)
-    .replace(/[\u202A-\u202E\u2066-\u2069\u200B-\u200F\uFEFF]/g, '')
+       .replace(/[\u202A-\u202E\u2066-\u2069\u200B-\u200F\uFEFF\u0000-\u001F\u007F]/g, '')
     .replace(/[<>&"`\\/]/g, '')
     .trim()
     .slice(0, limit)
@@ -891,6 +1062,10 @@ function migrateSave(data) {
   migrated.lastSprint = Array.isArray(migrated.lastSprint) ? migrated.lastSprint : null;
   migrated.lastFastestLap = (migrated.lastFastestLap && typeof migrated.lastFastestLap === 'object') ? migrated.lastFastestLap : null;
   migrated.sprintDone = !!migrated.sprintDone;
+    /* v23 */
+  migrated.asphaltTemp = Number.isFinite(migrated.asphaltTemp)
+    ? clamp(migrated.asphaltTemp, 5, 65)
+    : null;
 
   migrated.teams = migrated.teams.map(t => {
     const base = Number.isFinite(t.budget) ? t.budget : 100;
@@ -1174,7 +1349,8 @@ function newCareer(p) {
     mateTension: 0,
     lastSprint: null,
     lastFastestLap: null,
-    sprintDone: false
+    sprintDone: false,
+	    asphaltTemp: null,   /* popolato al primo goSetup() del weekend */
   };
   career.rngState = RNG_STATE >>> 0;
   const requestedRivalId = (typeof p.rivalId === 'string' && p.rivalId) ? p.rivalId : null;
@@ -1291,7 +1467,7 @@ function computeSeasonBudgetForTeam(team, standingPos, numTeams) {
   const posBonus = 0.7 + 0.7 * Math.pow(Math.max(0, posRatio), 0.8);
   const prestigeFactor = 0.9 + ((team.prestige || 70) - 65) * 0.006;
   const noise = rnd(0.92, 1.08);
-  const raw = Math.max(55, base * posBonus * prestigeFactor * noise);
+   const raw = Math.max(85, base * posBonus * prestigeFactor * noise);
   const taxed = applyLuxuryTax(raw);
   return Math.round(taxed);
 }
@@ -1386,17 +1562,18 @@ function rdRoleGainMult() {
 function rdEffectiveCost(stratId, teamCar, budgetNow) {
   const s = RD_STRATEGIES[stratId];
   const carFactor = 1 + Math.max(0, teamCar - 65) * 0.02;
+  const smallTeamDiscount = teamCar < 72 ? 0.60 : 1;
   const capMult = rdOverCapMultiplier(budgetNow);
-  return Math.round(s.cost * carFactor * capMult);
+  return Math.round(s.cost * carFactor * capMult * smallTeamDiscount);
 }
-
 function rdEffectiveFail(stratId, teamCar, teamRdSkill, pkgId, simCharges) {
   const s = RD_STRATEGIES[stratId];
   const pkg = rdPackageById(pkgId);
   const carFactor = Math.max(0, teamCar - 70) * 0.008;
   const skillFactor = (0.7 - (teamRdSkill || 0.6)) * 0.15;
   const buff = (pkg.id !== 'sim' && (simCharges || 0) > 0) ? SIM_BUFF_FAIL_REDUCTION : 0;
-  return clamp(s.failChance + carFactor + skillFactor + pkg.failAdd - buff, 0.03, 0.65);
+  const smallTeamRelief = teamCar < 75 ? 0.70 : 1;
+  return clamp((s.failChance + carFactor + skillFactor + pkg.failAdd - buff) * smallTeamRelief, 0.03, 0.65);
 }
 
 function rdEffectiveGain(stratId, teamCar, teamRdSkill, pkgId) {
@@ -1506,8 +1683,8 @@ function doRD(pkgId, stratId, silent) {
   S.rdDone++;
   if (S.rdDone >= 2) S.rdOpen = false;
 
+   if (silent) return true;
   save();
-  if (silent) return true;
 
   render({ resetScroll: false });
   const outcome = res.outcome;
@@ -1576,12 +1753,12 @@ function calculatePlayerProgression(p, mate, pos, wonTitle) {
   let speedDelta = 0;
   const speedReasons = [];
 
-  if (wonTitle)         { speedDelta += 2.8; speedReasons.push(['Titolo Mondiale conquistato', '+2.8']); }
-  else if (pos <= 3)    { speedDelta += 1.6; speedReasons.push(['Podio nel campionato piloti', '+1.6']); }
-  else if (pos <= 8)    { speedDelta += 0.9; speedReasons.push(['Stagione di alto livello', '+0.9']); }
-  else if (pos <= 14)   { speedDelta += 0.4; speedReasons.push(['Stagione regolare nei punti', '+0.4']); }
-  else                  { speedDelta -= 0.3; speedReasons.push(['Gavetta difficile', '-0.3']); }
-
+  if (wonTitle)         { speedDelta += 1.6; speedReasons.push(['Titolo Mondiale conquistato', '+1.6']); }
+  else if (pos <= 3)    { speedDelta += 1.0; speedReasons.push(['Podio nel campionato piloti', '+1.0']); }
+  else if (pos <= 8)    { speedDelta += 0.6; speedReasons.push(['Stagione di alto livello', '+0.6']); }
+  else if (pos <= 14)   { speedDelta += 0.3; speedReasons.push(['Stagione regolare nei punti', '+0.3']); }
+  else if (pos <= 18)   { speedDelta += 0;   speedReasons.push(['Stagione in fondo al gruppo', '0']); }
+  else                  { speedDelta -= 0.1; speedReasons.push(['Gavetta difficile', '-0.1']); }
   if (mate) {
     const diff0 = p.pts - mate.pts;
     let mult = 1;
@@ -1590,24 +1767,47 @@ function calculatePlayerProgression(p, mate, pos, wonTitle) {
     else if (mate.ovr >= 85) mult = 1.4;
     else if (mate.ovr >= 80) mult = 1.1;
 
+      // Il veterano che ti batte non ti fa regredire: ti fa crescere.
+    // Il malus "compagno perso" è attenuato per i primi anni di carriera
+    // e quando il gap di OVR è dovuto all'esperienza, non al talento.
+    const careerYears = S.totals.seasons || 0;
+    const ovrGap = Math.max(0, mate.ovr - p.ovr);
+    const graceByOvr = Math.max(0.10, 1 - ovrGap / 30);
+      const graceByAge = careerYears < 6 ? 0.35 : 1;
+    const rookieGrace = Math.min(graceByOvr, graceByAge);
+
     if (diff0 > 30)       { const v = round1(1.8 * mult); speedDelta += v; speedReasons.push(['Dominio sul compagno', '+' + v]); }
     else if (diff0 > 0)   { const v = round1(1.0 * mult); speedDelta += v; speedReasons.push(['Compagno battuto', '+' + v]); }
     else if (diff0 > -25) { speedDelta += 0.3; speedReasons.push(['Buona crescita di squadra', '+0.3']); }
-    else                  { speedDelta -= 0.4; speedReasons.push(['Confronto col compagno perso', '-0.4']); }
-  }
-
-  const rival = rivalDriver();
+    else {
+      const v = round1(0.4 * rookieGrace);
+      speedDelta -= v;
+      speedReasons.push([
+        careerYears < 4 ? 'Gavetta contro un veterano' : 'Confronto col compagno perso',
+        '-' + v
+      ]);
+    }
+ } 
+    const rival = rivalDriver();
   if (rival) {
     const rivalDiff = p.pts - rival.pts;
+    // Handicap: se il rivale è molto più forte di te (gap OVR), la penalità è ridotta
+    const rivalOvrGap = Math.max(0, rival.ovr - p.ovr);
+    const rivalHandicap = rivalOvrGap > 12 ? 0.25 : rivalOvrGap > 6 ? 0.5 : 1;
     if (rivalDiff > 40)       { speedDelta += 0.9; speedReasons.push(['Dominio sul rivale', '+0.9']); }
     else if (rivalDiff > 0)   { speedDelta += 0.4; speedReasons.push(['Rivale battuto in campionato', '+0.4']); }
-    else if (rivalDiff > -40) { speedDelta -= 0.2; speedReasons.push(['Rivale in vantaggio', '-0.2']); }
-    else                      { speedDelta -= 0.6; speedReasons.push(['Rivale dominante', '-0.6']); }
+    else if (rivalDiff > -40) { const v = round1(0.2 * rivalHandicap); speedDelta -= v; speedReasons.push(['Rivale in vantaggio', '-' + v]); }
+    else                      { const v = round1(0.6 * rivalHandicap); speedDelta -= v; speedReasons.push(['Rivale dominante', '-' + v]); }
+  }
+     // Talent-based growth: piloti veloci crescono anche con macchine scarse
+  const talentBonus = Math.max(0, ((p.speed + p.consistency) / 2 - 60) * 0.05);
+  if (talentBonus > 0) {
+    speedDelta += talentBonus;
+    speedReasons.push(['Talento in crescita', '+' + round1(talentBonus)]);
   }
 
   let consDelta = 0;
   const consReasons = [];
-
   if (dnfRate < 0.01)       { consDelta += 2.0;  consReasons.push(['Zero ritiri: affidabilità eccellente', '+2.0']); }
   else if (dnfRate < 0.15)  { consDelta += 1.2;  consReasons.push(['Ritiri contenuti: buona regolarità', '+1.2']); }
   else if (dnfRate < 0.30)  { consDelta += 0.2;  consReasons.push(['Regolarità nella media', '+0.2']); }
@@ -1631,24 +1831,28 @@ function calculatePlayerProgression(p, mate, pos, wonTitle) {
     tyreReasons.push(['Costanza nelle gare finali', '+0.4']);
   }
 
-  let resistance = 1;
+      let resistance = 1;
   if (p.ovr >= 75) {
     const agePenalty = p.age >= 34 ? (p.age - 33) * 0.15 : 0;
-    resistance = 1 + (p.ovr - 75) * 0.10 + agePenalty;
+    resistance = 1 + (p.ovr - 75) * 0.06 + agePenalty;
+    // Soft cap: oltre OVR 88 la crescita rallenta drasticamente
+    if (p.ovr >= 88) resistance *= 1.4;
+    if (p.ovr >= 92) resistance *= 1.4;
     const soften = v => (v > 0 ? v / resistance : v);
     speedDelta = soften(speedDelta);
     consDelta  = soften(consDelta);
     tyreDelta  = soften(tyreDelta);
   }
 
-  let ageMod = 0, ageLabel = null;
-  if (p.age <= 24)      { ageMod =  0.8; ageLabel = ['Spinta giovanile ed esordio', '+0.8']; }
-  else if (p.age <= 29) { ageMod =  0.4; ageLabel = ['Maturità agonistica', '+0.4']; }
-  else if (p.age <= 33) { ageMod = -0.1; ageLabel = ['Stabilità anagrafica', '-0.1']; }
-  else if (p.age <= 36) { ageMod = -1.0; ageLabel = ['Inizio declino fisico', '-1.0']; }
-  else if (p.age <= 39) { ageMod = -1.8; ageLabel = ['Fase calante di fine carriera', '-1.8']; }
+    let ageMod = 0, ageLabel = null;
+  if (p.age <= 21)      { ageMod =  2.0; ageLabel = ['Esordio: apprendimento rapido', '+2.0']; }
+  else if (p.age <= 24) { ageMod =  1.5; ageLabel = ['Crescita esplosiva', '+1.5']; }
+  else if (p.age <= 27) { ageMod =  0.9; ageLabel = ['Consolidamento', '+0.9']; }
+  else if (p.age <= 31) { ageMod =  0.4; ageLabel = ['Picco di carriera', '+0.4']; }
+  else if (p.age <= 33) { ageMod = -0.2; ageLabel = ['Inizio declino fisico', '-0.2']; }
+  else if (p.age <= 36) { ageMod = -0.9; ageLabel = ['Declino fisico', '-0.9']; }
+  else if (p.age <= 39) { ageMod = -1.8; ageLabel = ['Fase calante', '-1.8']; }
   else                  { ageMod = -3.0; ageLabel = ['Ultimo anno agonistico pesante', '-3.0']; }
-
   speedDelta += ageMod;
   consDelta  += ageMod * 0.6;
   tyreDelta  += ageMod * 0.4;
@@ -2208,35 +2412,65 @@ function endSeason() {
 function generateOffers(lastSeasonPos) {
   const p = S.player;
   const offers = [];
+  const myTeam = playerTeam();
+  const myCar = myTeam ? myTeam.car : 0;
 
   S.teams.forEach(t => {
     if (S.fired && t.id === p.teamId) return;
-    const isTopTeam = t.car >= 84;
 
-    let gap = p.ovr - (t.prestige * 0.4 + t.car * 0.3);
-    let interest = gap + rnd(0, 8);
+    // Calcola "fit": quanto il pilota è adatto a questo team
+      const ovrFit = p.ovr - t.car;
+    if (ovrFit < -14) return;   // allargato da -8 a -14
+    if (ovrFit > 22) return;    // allargato da 18 a 22
 
-    if (isTopTeam) {
-      if (p.ovr >= 82) interest += (p.ovr - 80) * 3;
-      else             interest -= 15;
-    }
+    // Filtro "sale se puoi, resta se sei arrivato"
+    const isUpgrade = t.car > myCar + 2;
+    const isLateral = Math.abs(t.car - myCar) <= 2;
+    const isDowngrade = t.car < myCar - 3;
 
-    if (t.id === p.teamId) interest += 12;
-    interest += S.totals.titles * 8;
-    interest += (S.reputation - 40) * 0.15;
-    if (S.mateTension >= 70 && t.id === p.teamId) interest -= 10;
+    // Downgrade bloccati (tranne se sei licenziato)
+    if (isDowngrade && !S.fired) return;
 
+    // Interesse base
+    let interest = 10;
+
+    // Bonus per team di alto prestigio (Mercedes/Ferrari attirano)
+    interest += (t.prestige - 60) * 0.3;
+
+    // Bonus titoli e reputazione
+    interest += S.totals.titles * 3;
+    interest += Math.max(0, S.reputation - 40) * 0.5;
+
+    // Posizione in campionato
     if (Number.isFinite(lastSeasonPos)) {
-      if (lastSeasonPos <= 3)       interest += 8;
-      else if (lastSeasonPos <= 8)  interest += 4;
-      else if (lastSeasonPos <= 14) interest += 1;
-      else                          interest -= 3;
+      if (lastSeasonPos <= 3)       interest += 10;
+      else if (lastSeasonPos <= 8)  interest += 5;
+      else if (lastSeasonPos <= 14) interest += 0;
+      else                          interest -= 5;
     }
 
-    if (interest > -12) {
-      const role   = interest > 12 ? ROLE_FIRST : interest > 4 ? ROLE_STD : ROLE_SECOND;
-      const years  = interest > 12 ? irnd(2, 3) : irnd(1, 2);
-      const salary = Math.round(clamp((p.ovr - 45) * 1.5 + t.prestige * 0.25 + interest * 0.6 + S.reputation * 0.15, 1, 75));
+    // Bonus current team (ti tiene se sei adatto)
+      if (t.id === p.teamId) {
+      if (ovrFit >= -5 && ovrFit <= 10) interest += 8;
+      else interest += 0;
+    }
+
+    // Malus current team se tensione alta
+    if (S.mateTension >= 70 && t.id === p.teamId) interest -= 15;
+
+    // Noise per varietà
+    interest += rnd(0, 8);
+
+    if (interest > 0) {
+      // Ruolo in base a quanto sei più forte della macchina
+      const role = ovrFit > 6 ? ROLE_FIRST
+                 : ovrFit > -3 ? ROLE_STD
+                 : ROLE_SECOND;
+      const years  = isUpgrade ? irnd(2, 3) : irnd(1, 2);
+      const salary = Math.round(clamp(
+        (p.ovr - 45) * 1.5 + t.prestige * 0.25 + interest * 0.6 + S.reputation * 0.15,
+        1, 75
+      ));
       offers.push({ teamId: t.id, role, years, salary, interest: round1(interest) });
     }
   });
@@ -2327,6 +2561,7 @@ function startNewSeason() {
   S.lastSprint = null;
   S.lastFastestLap = null;
   S.sprintDone = false;
+    S.asphaltTemp = null;
 
   S.regulationSnapshot = null;
   S.teams.forEach(t => { t.simCharges = 0; });
@@ -2335,8 +2570,8 @@ function startNewSeason() {
   const carryOver = Math.min(S.budget * BUDGET_CARRYOVER_RATE, BUDGET_CARRYOVER_CAP);
   const bonus = S.pendingBonus || 0;
   S.pendingBonus = 0;
-  S.budget = Math.max(0, Math.round(((pt.budgetNow || pt.budget) + irnd(-5, 15)) * diff().budgetMult + carryOver + bonus));
-
+   S.budget = Math.max(0, Math.round(((pt.budgetNow || pt.budget) + irnd(-5, 15)) * diff().budgetMult + carryOver + bonus));
+  S.budget = Math.max(S.budget, 40);
   S.drivers.forEach(d => {
     d.pts = 0; d.wins = 0; d.podiums = 0; d.poles = 0; d.dnf = 0;
     d.fin = newFin();
@@ -3680,22 +3915,76 @@ function bigStat(icon, v, l) {
 /* ---------- SETUP ---------- */
 function goSetup() {
   S.forecast = rollForecast();
+  S.forecast.hidden = drawWeatherFromForecast(S.forecast);   // persistito
+  S.asphaltTemp = rollAsphaltTemp();
   S.screen = 'setup';
   scheduleSave(0); render();
 }
-
 function chooseSetup(id) {
   if (S.screen !== 'setup') return;
   const r = CALENDAR[S.round];
   const s = SETUPS.find(x => x.id === id);
   if (!s) return;
-  S.weather = drawWeatherFromForecast(S.forecast);
+  S.weather = (S.forecast && S.forecast.hidden) || drawWeatherFromForecast(S.forecast);
+  if (S.forecast) S.forecast.hidden = null;
+  S.asphaltTemp = applyWeatherToAsphalt(S.asphaltTemp, S.weather.name);  // ← correzione QUI
   S.setupBonus = setupBonusFor(id, r.type, S.weather.name);
   S.setupLabel = s.name;
   save();
   goQualifying();
 }
+function briefingPanel() {
+  const race = CALENDAR[S.round];
+  if (!race) return '';
+  const t = S.asphaltTemp;
+  const lbl = asphaltTempLabel(t);
+  const range = Array.isArray(race.asphaltTemp)
+    ? race.asphaltTemp[0] + '–' + race.asphaltTemp[1] + ' °C'
+    : '—';
+  const icon = t == null ? '🌡️'
+             : t >= 45 ? '🔥'
+             : t >= 38 ? '🌡️'
+             : t >= 30 ? '☀️'
+             : t >= 22 ? '🌤️'
+             : t >= 15 ? '❄️'
+             :           '🧊';
 
+  return `
+  <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden mb-4">
+    <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+      <span class="text-[11px] uppercase tracking-wider text-slate-400">📋 Briefing circuito</span>
+      <span class="text-[11px] text-slate-500">Range storico: ${esc(range)}</span>
+    </div>
+
+    <div class="p-4">
+      <div class="text-sm font-bold text-slate-200">${esc(race.fullName || (race.gp + ' — ' + race.circuit))}</div>
+      <p class="text-[12px] text-slate-400 mt-1.5 leading-relaxed">${esc(race.desc || '')}</p>
+
+      <div class="grid grid-cols-2 gap-2 mt-4">
+        <div class="bg-carbon3 rounded-xl py-2.5 px-3 flex items-center gap-2">
+          <span class="text-2xl">${icon}</span>
+          <div class="min-w-0">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500">Asfalto oggi</div>
+            <div class="font-black text-lg ${lbl.cls}">${t == null ? '—' : t + ' °C'}</div>
+          </div>
+        </div>
+        <div class="bg-carbon3 rounded-xl py-2.5 px-3">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500">Condizione</div>
+          <div class="font-black text-lg ${lbl.cls}">${esc(lbl.label)}</div>
+        </div>
+      </div>
+
+      <div class="text-[11px] text-slate-500 mt-3 italic">
+        ${t == null ? 'La temperatura verrà misurata all\'inizio del weekend.'
+          : t >= 42 ? 'Asfalto rovente: le mescole morbide soffriranno molto, le dure saranno la scelta più solida ma con meno picco.'
+          : t >= 34 ? 'Asfalto caldo: degrado termico importante sulle morbide, le medie/dure tengono meglio sul lungo.'
+          : t >= 24 ? 'Asfalto mite: finestra ideale per le mescole intermedie.'
+          : t >= 16 ? 'Asfalto fresco: le dure faticheranno a entrare in temperatura, le morbide sono favorite.'
+          :           'Asfalto freddo: attenzione al graining con le dure, le morbide restano la scelta più rapida.'}
+      </div>
+    </div>
+  </div>`;
+}
 function viewSetup() {
   const r = CALENDAR[S.round];
   const fc = S.forecast || { probs: WEATHER_CLIMATE };
@@ -3709,7 +3998,7 @@ function viewSetup() {
   return `
   <div class="anim">
     ${header('Setup pre-qualifica', esc(r.flag) + ' GP ' + esc(r.gp) + ' — ' + esc(r.circuit))}
-
+  ${briefingPanel()}  
     <div class="bg-carbon2 rounded-2xl p-4 neon-soft mb-4">
       <div class="flex items-center justify-between mb-3">
         <div class="text-[11px] uppercase tracking-wider text-slate-400">🌦️ Previsioni meteo</div>
@@ -3752,6 +4041,7 @@ function goQualifying() { startQualifying({ keepWeather: true }); }
 
 function startQualifying(opts = {}) {
   if (!opts.keepWeather) S.weather = pickWeather();
+  S.reviewingFromStrategy = false;
   S.quali = {
     session: 0, sessions: {}, playerPos: {}, commentary: {},
     status: 'running', eliminatedIn: null, finalPos: null,
@@ -3927,6 +4217,7 @@ function buildGridFromQuali() {
   if (S.quali.sessions[1]) S.quali.sessions[1].slice(15, 22).forEach(r => grid.push(r.id));
   const seen = new Set();
   S.grid = grid.filter(id => { if (seen.has(id)) return false; seen.add(id); return true; });
+  applySessionTempShift();   // ← NUOVO: shift termico dopo la griglia
 }
 
 function isSprintWeekend() {
@@ -3934,8 +4225,13 @@ function isSprintWeekend() {
 }
 
 function completeQualifying() {
+  if (S.reviewingFromStrategy) {
+    S.reviewingFromStrategy = false;
+    S.screen = 'strategy';
+    save(); render();
+    return;
+  }
   buildGridFromQuali();
-  S.reviewingFromStrategy = false;
   if (isSprintWeekend() && !S.sprintDone) {
     simSprint();
     S.screen = 'sprint';
@@ -3947,6 +4243,7 @@ function completeQualifying() {
 
 function simQualifying() {
   S.weather = pickWeather();
+   S.asphaltTemp = rollAsphaltTemp(); 
   S.quali = {
     session: 0, sessions: {}, playerPos: {}, commentary: {},
     status: 'running', eliminatedIn: null, finalPos: null,
@@ -3957,7 +4254,13 @@ function simQualifying() {
   if (S.quali.status === 'running') runQualiSession(3);
   buildGridFromQuali();
 }
-
+/* v24: correzione clima → temperatura asfalto (meteo reale del weekend) */
+function applyWeatherToAsphalt(temp, weatherName) {
+  if (!Number.isFinite(temp)) return temp;
+  if (weatherName === 'Variabile') return Math.max(8, Math.round(temp - rnd(4, 9)));
+  if (weatherName === 'Pioggia')   return Math.max(8, Math.round(temp - rnd(10, 16)));
+  return temp;
+}
 function viewQuali() {
   const q = S.quali;
   if (q.status !== 'running') return viewQualiReview();
@@ -3988,6 +4291,7 @@ function viewQuali() {
   return `
   <div class="anim">
     <div class="text-center mb-4">
+	  
       <div class="text-[11px] uppercase tracking-[0.3em] text-slate-500">Qualifiche — ${cfg.name}</div>
       <h2 class="text-2xl font-black">${esc(r.flag)} GP ${esc(r.gp)}</h2>
       <div class="text-sm text-slate-400">${esc(S.weather.icon)} ${esc(S.weather.name)}</div>
@@ -4276,14 +4580,29 @@ function viewStrategy() {
       <div class="text-sm text-slate-400">${esc(S.weather.icon)} ${esc(S.weather.name)}</div>
       <div class="text-xs text-slate-500 mt-1">Parti dalla <b class="text-slate-200">P${playerGridPos}</b></div>
     </div>
-
+    ${S.asphaltTemp != null ? (() => {
+      const t = S.asphaltTemp;
+      const lbl = asphaltTempLabel(t);
+      return `
+      <div class="bg-carbon2 rounded-2xl neon-soft p-3 mb-4 flex items-center gap-3">
+        <span class="text-2xl">🌡️</span>
+        <div class="flex-1 min-w-0">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500">Temperatura asfalto in gara</div>
+          <div class="font-black text-lg ${lbl.cls}">${t} °C — ${esc(lbl.label)}</div>
+        </div>
+      </div>`;
+    })() : ''}
     ${hasQuali ? `
     <button type="button" data-action="review-quali"
       class="w-full mb-4 py-3 rounded-2xl bg-carbon2 neon-soft text-slate-300 font-bold text-sm active:scale-[.98] transition">
       🔄 Rivedi i risultati delle qualifiche
     </button>` : ''}
 
-    <p class="text-sm text-slate-400 mb-4">Scegli la strategia gomme per questo Gran Premio. Le mescole disponibili dipendono dal meteo del weekend; la tua Gestione Gomme (${S.player.tyres}) riduce il degrado delle strategie più aggressive.</p>
+        <p class="text-sm text-slate-400 mb-4">
+      Scegli la strategia gomme per questo Gran Premio. Le mescole disponibili dipendono dal meteo
+      del weekend, mentre la resa dipende dalla temperatura dell'asfalto (${S.asphaltTemp != null ? S.asphaltTemp + ' °C' : '—'}).
+      La tua Gestione Gomme (${S.player.tyres}) riduce il degrado delle strategie più aggressive.
+    </p>
 
     <div class="space-y-3">
       ${opts.map(s => `
@@ -4294,6 +4613,18 @@ function viewStrategy() {
             <div class="flex-1 min-w-0">
               <div class="font-black">${esc(s.name)}</div>
               <div class="text-[12px] text-slate-400">${esc(s.desc)}</div>
+			                ${S.asphaltTemp != null ? (() => {
+                const eff = asphaltTempEffect(s.id, S.asphaltTemp);
+                const wear = eff.wearMult;
+                const wearCls = wear > 1.15 ? 'text-racing' : wear > 1.02 ? 'text-gold' : wear < 0.95 ? 'text-emerald-400' : 'text-slate-400';
+                const paceCls = eff.paceMod > 0.15 ? 'text-emerald-400' : eff.paceMod < -0.02 ? 'text-racing' : 'text-slate-400';
+                const wearLbl = wear > 1.15 ? 'usura alta' : wear > 1.02 ? 'usura lieve' : wear < 0.95 ? 'usura ridotta' : 'usura neutra';
+                const paceLbl = eff.paceMod > 0.15 ? 'passo favorito' : eff.paceMod < -0.02 ? 'passo penalizzato' : 'passo neutro';
+                return `<div class="flex gap-3 mt-1.5 text-[11px]">
+                  <span class="${wearCls}">🔥 ${wearLbl} (×${wear.toFixed(2)})</span>
+                  <span class="${paceCls}">⚡ ${paceLbl} (${eff.paceMod >= 0 ? '+' : ''}${eff.paceMod.toFixed(2)})</span>
+                </div>`;
+              })() : ''}
             </div>
           </div>
         </button>`).join('')}
@@ -4312,11 +4643,9 @@ const RADIO_STYLES = {
   bad:   { color: 'text-racing',     bg: 'bg-racing/10',      icon: '🚨' }
 };
 
-function generateRadio(ctx) {
+/* Messaggi radio pre-gara: partenza, temperatura, snowball, gomme risparmiate, assetto */
+function generateRadioPreRace() {
   const msgs = [];
-  const { me, safetyCar } = ctx;
-  const totalLaps = 57;
-  const rival = rivalDriver();
 
   msgs.push({
     lap: 1, type: 'info',
@@ -4336,6 +4665,23 @@ function generateRadio(ctx) {
     msgs.push({ lap: 1, type: 'info', text: "💾 Gomme più fresche grazie alla scelta di saltare la Q3." });
   }
 
+  if (Number.isFinite(S.asphaltTemp) && S.asphaltTemp >= 45) {
+    msgs.push({
+      lap: irnd(3, 8), type: 'warn',
+      text: '🌡️ Asfalto rovente (' + S.asphaltTemp + ' °C): gestione termica delle gomme critica, non forzare troppo.'
+    });
+  } else if (Number.isFinite(S.asphaltTemp) && S.asphaltTemp <= 18) {
+    msgs.push({
+      lap: irnd(3, 8), type: 'info',
+      text: '❄️ Asfalto freddo (' + S.asphaltTemp + ' °C): faticheremo a mandare in temperatura le gomme, primi giri delicati.'
+    });
+  } else if (Number.isFinite(S.asphaltTemp) && S.asphaltTemp >= 38) {
+    msgs.push({
+      lap: irnd(3, 8), type: 'info',
+      text: '🌡️ Asfalto caldo (' + S.asphaltTemp + ' °C): attenzione al degrado termico.'
+    });
+  }
+
   if ((S.setupBonus || 0) < 0) {
     msgs.push({
       lap: irnd(3, 8), type: 'warn',
@@ -4345,26 +4691,15 @@ function generateRadio(ctx) {
     });
   }
 
-  /* v22: solo nel flusso simulato (non live) */
-  if (!me.dnf && !ctx.live) {
-    if (S.player.tyres < 45) {
-      msgs.push({ lap: irnd(18, 32), type: 'bad',
-        text: rng() < 0.5 ? "🔴 Le gomme sono finite. Prova a resistere fino alla fine."
-                          : "🔴 Degrado critico, stai perdendo aderenza. Attenzione." });
-    } else if (S.player.tyres < 60) {
-      msgs.push({ lap: irnd(18, 32), type: 'warn',
-        text: rng() < 0.5 ? "🟡 Degrado in aumento. Gestisci le gomme con cura."
-                          : "🟡 Le gomme iniziano a cedere, non spingere troppo adesso." });
-    } else {
-      msgs.push({ lap: irnd(18, 32), type: 'good', text: "🟢 Gestione gomme ottima, puoi spingere ancora." });
-    }
-  }
+  msgs.sort((a, b) => a.lap - b.lap);
+  return msgs;
+}
 
-  if (safetyCar) {
-    msgs.push({ lap: irnd(10, 42), type: 'warn',
-      text: rng() < 0.5 ? "🚨 Safety Car in pista! Approfittane per rientrare ai box."
-                        : "🚨 Safety Car! È il momento di un pit stop gratuito." });
-  }
+/* Messaggi radio finali: rivalità, guadagno posizioni, messaggio conclusivo */
+function generateRadioFinal(me, safetyCar) {
+  const msgs = [];
+  const totalLaps = 57;
+  const rival = rivalDriver();
 
   if (rival && !me.dnf) {
     const rivalResult = S.lastRace ? S.lastRace.find(r => r.id === S.rivalId) : null;
@@ -4408,8 +4743,20 @@ function generateRadio(ctx) {
   }
 
   msgs.sort((a, b) => a.lap - b.lap);
-  return msgs.slice(0, RADIO_LOG_CAP);
+  return msgs;
 }
+
+/* Wrapper di retrocompatibilità (usato dai test) */
+function generateRadio(ctx) {
+  const { me, safetyCar } = ctx;
+  const all = [
+    ...generateRadioPreRace(),
+    ...generateRadioFinal(me, safetyCar)
+  ];
+  all.sort((a, b) => a.lap - b.lap);
+  return all.slice(0, RADIO_LOG_CAP);
+}
+ 
 
 /* =========================================================================
    ============================ GARA A STINT ===============================
@@ -4433,7 +4780,10 @@ function buildRaceLive() {
     const strat = applyStrategyEffect(stratId, w.name, circuit.type, d.isPlayer ? d.tyres : 50);
     const pace = car * SIM_TUNING.raceCarWeight + d.ovr * SIM_TUNING.raceOvrWeight;
 
-    let base = pace - gridPos * SIM_TUNING.raceGridPenalty + strat.bonus
+    /* v23: effetto temperatura asfalto sulla mescola */
+    const tEffect = asphaltTempEffect(stratId, S.asphaltTemp);
+
+    let base = pace - gridPos * SIM_TUNING.raceGridPenalty + strat.bonus + tEffect.paceMod
              + traitBonus(d.trait, 'race', w.name, circuit.type) + (ROLE_PACE[d.role] || 0);
     if (d.isPlayer) {
       base += (S.setupBonus || 0) + diff().paceBonus;
@@ -4447,6 +4797,13 @@ function buildRaceLive() {
     } else {
       base += rnd(-SIM_TUNING.raceAiFlavorNoise, SIM_TUNING.raceAiFlavorNoise);
     }
+	    /* v24: penalità soft "usate" in qualifica (solo player, solo strategie con Soft) */
+    if (d.isPlayer) {
+      const usedSofts = !!(S.quali && S.quali.status !== 'retired' && !S.quali.savedTyres);
+      if (usedSofts && (stratId === '1stop_soft_hard' || stratId === '2stop_soft_med_soft')) {
+        base -= 0.5;
+      }
+    }
     let dnfChance = clamp(
       SIM_TUNING.dnfBase + (100 - car) * SIM_TUNING.dnfCarSlope + (w.chaos - 1) * SIM_TUNING.dnfWeatherSlope,
       SIM_TUNING.dnfMin, SIM_TUNING.dnfMax);
@@ -4456,17 +4813,55 @@ function buildRaceLive() {
       dnfChance *= diff().dnfMult;
     }
 
-    return { id, base, pace, chaosScale: strat.chaosScale, dnfChance,
-             sc: 0, wear: 0, dnf: false, dnfStint: null, grid: gridPos + 1, strat: stratId };
+      return { id, base, pace, chaosScale: strat.chaosScale, dnfChance,
+             sc: 0, wear: 0, dnf: false, dnfStint: null, grid: gridPos + 1, strat: stratId,
+             tempWearMult: tEffect.wearMult };   /* ← NUOVO */
   });
 
   return {
     stint: 0, rows,
     sc: { happened: false, stint: null, resolved: true },
-    pending: 'pace', log: [], ordersDone: false, ordersMateId: null
+      pending: 'pace', log: generateRadioPreRace(), ordersDone: false, ordersMateId: null
   };
 }
+/* v24: numero di pit stop previsti per strategia */
+function strategyPitCount(stratId) {
+  if (stratId === '2stop_soft_med_soft') return 2;
+  return 1;   /* 1-stop, inter, wet: tutti 1 pit */
+}
 
+/* v24: pit stop temporizzato a fine stint.
+   stintDoneIdx = indice dello stint appena completato (0,1,2).
+   - Dopo stint 1 (idx 0): tutti fanno pit
+   - Dopo stint 2 (idx 1): solo i 2-stop fanno pit
+   - Dopo stint 3 (idx 2): nessun pit (fine gara) */
+function applyPitStop(L, stintDoneIdx) {
+  if (stintDoneIdx >= RACE_STINTS.length - 1) return;  /* niente pit dopo l'ultimo stint */
+
+  L.rows.forEach(r => {
+    if (r.dnf) return;
+    const d = driverById(r.id);
+    const pitCount = strategyPitCount(r.strat);
+    const needsPit = (stintDoneIdx === 0) || (stintDoneIdx === 1 && pitCount === 2);
+    if (!needsPit) return;
+
+    const pitLossSec = rnd(PIT_TIME_LOSS_MIN, PIT_TIME_LOSS_MAX);
+    const pitLossSc = pitLossSec / SIM_TUNING.gapFactor;
+    r.sc -= pitLossSc;
+    r.pitStops = (r.pitStops || 0) + 1;
+
+    /* Gomme nuove: reset parziale dell'usura */
+    r.wear = Math.max(0, r.wear * PIT_WEAR_RESET);
+
+    if (d.isPlayer) {
+      const lap = RACE_STINTS[stintDoneIdx].lapTo;
+      L.log.push({
+        lap, type: 'info',
+        text: '🛞 Pit stop (' + pitLossSec.toFixed(1) + 's). Gomme fresche, ora spingi.'
+      });
+    }
+  });
+}
 function runStint(L, idx, playerMode) {
   const st = RACE_STINTS[idx];
   const w = S.weather;
@@ -4478,7 +4873,9 @@ function runStint(L, idx, playerMode) {
     const mode = PACE_MODES[d.isPlayer ? playerMode : aiPaceMode()] || PACE_MODES.normal;
 
     let inc = r.base * st.weight + mode.bonus;
-    r.wear = clamp(r.wear + mode.wear * wearMultFor(d), 0, 100);
+         let wearDelta = mode.wear * wearMultFor(d) * (r.tempWearMult || 1);
+    if (r.wear >= WEAR_CLIFF_START) wearDelta *= WEAR_CLIFF_MULT;
+    r.wear = clamp(r.wear + wearDelta, 0, 100);
     if (r.wear > WEAR_PENALTY_START) inc -= (r.wear - WEAR_PENALTY_START) * WEAR_PENALTY_SLOPE;
 
     let roll = rnd(-amp, amp);
@@ -4528,7 +4925,17 @@ function liveRadioAfterStint(L, idx) {
   else if (me.wear > 35)
     L.log.push({ lap: st.lapTo, type: 'warn', text: '🟡 Le gomme sono usurate, valuta come gestirle.' });
 }
-
+function stepStint(L, modeId) {
+  runStint(L, L.stint, modeId);
+  liveRadioAfterStint(L, L.stint);
+  applyPitStop(L, L.stint);      // ← NUOVO: pit stop tra stint
+  L.stint++;
+  const me = L.rows.find(r => r.id === 'PLAYER');
+  if (L.stint >= RACE_STINTS.length) { L.pending = null; return; }
+  if (me.dnf)                          { L.pending = 'auto'; return; }
+  if (L.sc.happened && !L.sc.resolved) { L.pending = 'sc'; return; }
+  L.pending = maybeTeamOrders(L) ? 'orders' : 'pace';
+}
 function maybeTeamOrders(L) {
   if (L.stint !== 2 || L.ordersDone) return false;
   const mate = teammate();
@@ -4540,16 +4947,6 @@ function maybeTeamOrders(L) {
   return true;
 }
 
-function stepStint(L, modeId) {
-  runStint(L, L.stint, modeId);
-  liveRadioAfterStint(L, L.stint);
-  L.stint++;
-  const me = L.rows.find(r => r.id === 'PLAYER');
-  if (L.stint >= RACE_STINTS.length) { L.pending = null; return; }
-  if (me.dnf)                          { L.pending = 'auto'; return; }
-  if (L.sc.happened && !L.sc.resolved) { L.pending = 'sc'; return; }
-  L.pending = maybeTeamOrders(L) ? 'orders' : 'pace';
-}
 
 function resolveLiveSC(L, choice) {
   const me = L.rows.find(r => r.id === 'PLAYER');
@@ -4658,7 +5055,7 @@ function finalizeRace(L) {
   updateMateTension(S.lastRace);
 
   /* radio unificata */
-  S.radioLog = [...L.log, ...generateRadio({ me, safetyCar, w, live: true })]
+   S.radioLog = [...L.log, ...generateRadioFinal(me, safetyCar)]
     .sort((a, b) => a.lap - b.lap).slice(0, RADIO_LOG_CAP);
 
   if (S.sponsor && !S.sponsor.completed && S.sponsor.type !== 'title') {
@@ -4819,12 +5216,31 @@ function viewRaceLive() {
 
   return `
   <div class="anim">
+    
     <div class="text-center mb-4">
       <div class="text-[11px] uppercase tracking-[0.3em] text-slate-500">Gara — ${esc(st.name)} · giro ${st.lapFrom}/57</div>
       <h2 class="text-2xl font-black">${esc(r.flag)} GP ${esc(r.gp)}</h2>
       <div class="text-sm text-slate-400">${esc(S.weather.icon)} ${esc(S.weather.name)}${L.sc.happened ? ' · 🚨 Safety Car' : ''}</div>
     </div>
-
+    ${L.log.length ? `
+    <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden mb-4">
+      <div class="px-4 py-3 border-b border-slate-800 font-black text-xs uppercase tracking-wider flex items-center justify-between">
+        <span>📻 Team Radio</span>
+        <span class="text-slate-500 font-normal normal-case">${L.log.length} messaggi</span>
+      </div>
+      <div class="divide-y divide-slate-800/60">
+        ${[...L.log].reverse().slice(0, 4).map((m, i) => {
+          const stMsg = RADIO_STYLES[m.type] || RADIO_STYLES.info;
+          return `
+          <div class="radio-line flex items-start gap-3 px-4 py-2.5 ${stMsg.bg}" style="animation-delay:${i * 40}ms">
+            <span class="text-[10px] uppercase tracking-wider text-slate-500 w-14 shrink-0 mt-1 font-mono">Giro ${m.lap}</span>
+            <span class="text-base shrink-0">${stMsg.icon}</span>
+            <span class="flex-1 text-sm ${stMsg.color}">${esc(m.text)}</span>
+          </div>`;
+        }).join('')}
+      </div>
+      ${L.log.length > 4 ? `<div class="px-4 py-2 text-[10px] text-slate-500 text-center border-t border-slate-800">… e altri ${L.log.length - 4} messaggi precedenti</div>` : ''}
+    </div>` : ''}
     <div class="rounded-2xl p-5 mb-4 text-center neon bg-carbon2">
       <div class="text-[11px] uppercase tracking-wider text-slate-400">Posizione attuale</div>
       <div class="text-6xl font-black">P${myPos || '—'}</div>
@@ -4973,6 +5389,7 @@ function afterRace() {
   S.forecast = null;
   S.raceLive = null;
   S.lastSprint = null;
+    S.asphaltTemp = null;
   if (S.round >= CALENDAR.length) S.screen = 'seasonEnd';
   else { S.screen = 'hub'; S.tab = S.rdOpen ? 'rd' : 'race'; }
   scheduleSave(0); render();
@@ -5282,17 +5699,21 @@ function viewProgress() {
     <div class="bg-carbon2 rounded-2xl p-4 neon-soft mb-4">
       <div class="text-[11px] uppercase tracking-wider text-slate-400 mb-3">Fattori di valutazione</div>
       <div class="space-y-2">
-               ${pr.reasons.map(r => {
-          const num = parseFloat(String(r[1]).replace(/[^0-9.\-+]/g, ''));
-          const cls = Number.isFinite(num) && num > 0 ? 'text-emerald-400'
-                    : Number.isFinite(num) && num < 0 ? 'text-racing'
-                    : 'text-slate-500';
-          return `
-          <div class="flex justify-between text-sm">
-            <span class="text-slate-300">${esc(r[0])}</span>
-            <span class="font-black ${cls}">${esc(r[1])}</span>
-          </div>`;
-        }).join('')}
+          ${pr.reasons.map(r => {
+  const raw = String(r[1]);
+  const isMultiplier = raw.startsWith('×');
+  const num = parseFloat(raw.replace(/[^0-9.\-+]/g, ''));
+  const cls = isMultiplier
+    ? (num < 1 ? 'text-racing' : 'text-slate-500')   // ×0.83 = penalità
+    : Number.isFinite(num) && num > 0 ? 'text-emerald-400'
+    : Number.isFinite(num) && num < 0 ? 'text-racing'
+    : 'text-slate-500';
+  return `
+  <div class="flex justify-between text-sm">
+    <span class="text-slate-300">${esc(r[0])}</span>
+    <span class="font-black ${cls}">${esc(r[1])}</span>
+  </div>`;
+}).join('')}
       </div>
     </div>
 
@@ -5832,10 +6253,15 @@ function withTestState(fn) {
 }
 
 test('durante i test save() è un no-op e non tocca localStorage', () => {
-  assertEq(IO_SUSPENDED, true, 'IO_SUSPENDED dovrebbe essere attivo');
-  withTestState(() => {
-    assertEq(save(), false, 'save() deve essere no-op durante i test');
-  });
+  const prev = IO_SUSPENDED;
+  IO_SUSPENDED = true;
+  try {
+    withTestState(() => {
+      assertEq(save(), false, 'save() deve essere no-op durante i test');
+    });
+  } finally {
+    IO_SUSPENDED = prev;
+  }
 });
 
 test('clamp blocca i valori nei limiti', () => {
@@ -6571,7 +6997,46 @@ test('selectRivalForCareer: sceglie un rivale valido di fascia simile', () => {
     assert(Math.abs(rivalTeam.car - myTeam.car) <= 15, 'rivale fuori fascia: ' + (rivalTeam.car - myTeam.car));
   });
 });
+test('asphaltTemp: rollAsphaltTemp resta nel range del circuito', () => {
+  withTestState(() => {
+    seedRng(99);
+    for (let i = 0; i < CALENDAR.length; i++) {
+      S.round = i;
+      const [min, max] = CALENDAR[i].asphaltTemp;
+      for (let k = 0; k < 40; k++) {
+        const t = rollAsphaltTemp();
+        assert(t >= min && t <= max, 'temp fuori range per ' + CALENDAR[i].gp + ': ' + t);
+      }
+    }
+  });
+});
 
+test('asphaltTempEffect: soft su asfalto rovente amplifica usura', () => {
+  const hot = asphaltTempEffect('2stop_soft_med_soft', 48);
+  const cold = asphaltTempEffect('2stop_soft_med_soft', 18);
+  assert(hot.wearMult > cold.wearMult, 'soft: hot deve usurarsi più di cold');
+});
+
+test('asphaltTempEffect: hard su asfalto freddo penalizza il passo', () => {
+  const cold = asphaltTempEffect('1stop_hard_med', 15);
+  const hot = asphaltTempEffect('1stop_hard_med', 40);
+  assert(cold.paceMod < hot.paceMod, 'hard: cold deve essere peggio di hot');
+  assert(cold.paceMod < 0, 'hard cold: paceMod atteso negativo');
+});
+
+test('asphaltTempEffect: fallback su strategia sconosciuta', () => {
+  const eff = asphaltTempEffect('nonexistent', 30);
+  assert(Number.isFinite(eff.wearMult) && Number.isFinite(eff.paceMod));
+});
+
+test('migrateSave: v22 → v23 aggiunge asphaltTemp', () => {
+  withTestState(() => {
+    const raw = JSON.parse(JSON.stringify(S));
+    delete raw.asphaltTemp;
+    const mig = migrateSave(raw);
+    assertEq(mig.asphaltTemp, null);
+  });
+});
 function runAllTests() {
   const results = [];
   const t0 = performance.now();
