@@ -118,7 +118,7 @@
    ================================ CONFIG =================================
    ========================================================================= */
 
-const SAVE_VERSION = 28;
+const SAVE_VERSION = 29;
 const SLOT_COUNT = 3;
 const slotKey = n => 'f1_career_slot_' + n;
 const metaKey = n => 'f1_career_meta_' + n;
@@ -247,10 +247,7 @@ function computeStints(totalLaps) {
       lapFrom,
       lapTo,
       weight: w,
-      pitWindow: isLast ? null : [
-        Math.max(lapFrom + 2, lapTo - 7),
-        Math.min(lapTo + 2, lapTo + 2)
-      ]
+     pitWindow: isLast ? null : [lapFrom + 2, lapTo + 2]
     });
   }
   return out;
@@ -335,7 +332,80 @@ const PIT_EXIT_WEIGHT_DEFAULT  = 0.40;
 const PIT_TRAFFIC_MAX          = 3.0;   // secondi persi se rientri nel traffico
 const PIT_DOUBLE_STACK_MIN     = 2.5;   // secondi extra per doppio stack
 const PIT_DOUBLE_STACK_MAX     = 5.5;
+/* ===== v32: HQ Facilities ===== */
+const FACILITY_IDS = ['windTunnel', 'simulator', 'dyno', 'pitEquipment', 'operations'];
+const FACILITY_MAX_LEVEL = 5;
 
+const FACILITY_META = {
+  windTunnel:   { icon:'🪁', name:'Galleria del Vento & CFD',        short:'Galleria' },
+  simulator:    { icon:'🖥️', name:'Simulatore DIL & Driver Academy', short:'Simulatore' },
+  dyno:         { icon:'🔋', name:'Banchi Prova Power Unit',          short:'Banchi PU' },
+  pitEquipment: { icon:'🧑🔧', name:'Attrezzatura Pit Stop & Palestra', short:'Pit Crew' },
+  operations:   { icon:'💼', name:'Centro Commerciale & Produzione',   short:'Operations' }
+};
+
+const FACILITY_DESCS = {
+  windTunnel:   '+4% guadagno e −1.0% rischio per ogni livello su pacchetti Aerodinamici e Telaio.',
+  simulator:    '+0.15 sc di setup bonus e +3% crescita attributi per livello su tutti i piloti del team.',
+  dyno:         '+4% guadagno e −1.0% rischio per livello su Power Unit; −5% usura PU e −5% danno meccanico per livello.',
+  pitEquipment: '−0.08s di bias crew e −0.8% probabilità di fumble per livello.',
+  operations:   '+5% premi sponsor, −3% costi R&D e −3% Luxury Tax per livello.'
+};
+
+// Costo per arrivare al livello N (indice = livello target)
+const FACILITY_UPGRADE_COST = { 2: 12, 3: 22, 4: 38, 5: 55 };
+const FACILITY_MAINTENANCE_PER_LEVEL = 1.5;   // M$ / anno per ogni livello totale
+
+// Default in base al prestigio (fallback per migrazione)
+function defaultFacilitiesFor(prestige) {
+  const b = prestige >= 90 ? 5
+          : prestige >= 80 ? 4
+          : prestige >= 65 ? 3
+          : prestige >= 55 ? 2
+          : 1;
+  return { windTunnel:b, simulator:b, dyno:b, pitEquipment:b, operations:b };
+}
+function facilityLevel(team, fac) {
+  if (!team || !team.facilities) return 1;
+  const v = team.facilities[fac];
+  return Number.isFinite(v) ? clamp(Math.round(v), 1, FACILITY_MAX_LEVEL) : 1;
+}
+function facilityBonus(team, fac) { return facilityLevel(team, fac) - 1; }
+
+function facilityTotalLevels(team) {
+  return FACILITY_IDS.reduce((s, f) => s + facilityLevel(team, f), 0);
+}
+function facilityMaintenanceCost(team) {
+  return facilityTotalLevels(team) * FACILITY_MAINTENANCE_PER_LEVEL;
+}
+function nextFacilityUpgradeCost(team, fac) {
+  const lv = facilityLevel(team, fac);
+  if (lv >= FACILITY_MAX_LEVEL) return null;
+  return FACILITY_UPGRADE_COST[lv + 1] || null;
+}
+
+/* ---- Effetti derivati ---- */
+function facilityRDGainMult(team, pkgId) {
+  let m = 1;
+  if (pkgId === 'aero' || pkgId === 'chass') m += facilityBonus(team, 'windTunnel')   * 0.04;
+  if (pkgId === 'power')                     m += facilityBonus(team, 'dyno')         * 0.04;
+  return m;
+}
+function facilityRDFailDelta(team, pkgId) {
+  let d = 0;
+  if (pkgId === 'aero' || pkgId === 'chass') d -= facilityBonus(team, 'windTunnel') * 0.010;
+  if (pkgId === 'power')                     d -= facilityBonus(team, 'dyno')       * 0.010;
+  return d;
+}
+function facilitySetupBonus(team)      { return facilityBonus(team, 'simulator')    * 0.15; }
+function facilityDriverGrowthMult(team){ return 1 + facilityBonus(team, 'simulator') * 0.03; }
+function facilityPUWearMult(team)      { return Math.max(0.50, 1 - facilityBonus(team, 'dyno') * 0.05); }
+function facilityDamageMult(team)      { return Math.max(0.60, 1 - facilityBonus(team, 'dyno') * 0.05); }
+function facilityPitBiasDelta(team)    { return -facilityBonus(team, 'pitEquipment') * 0.08; }
+function facilityFumbleChance(team)    { return Math.max(0.005, PIT_FUMBLE_CHANCE - facilityBonus(team, 'pitEquipment') * 0.008); }
+function facilitySponsorMult(team)     { return 1 + facilityBonus(team, 'operations') * 0.05; }
+function facilityRDCostMult(team)      { return Math.max(0.75, 1 - facilityBonus(team, 'operations') * 0.03); }
+function facilityLuxuryTaxRate(team)   { return Math.max(0.20, LUXURY_TAX_RATE - facilityBonus(team, 'operations') * 0.03); }
 /* Pesi caratteristici per circuiti dove la corsia box è atipica */
 const CIRCUIT_PIT_WEIGHTS = {
   Montecarlo:      { wEntry: 0.45, wBase: 0.25, wExit: 0.30 },   // corsia lunga e stretta
@@ -444,17 +514,38 @@ const AI_AGGRESSION = {
   wil: 0.50, ast: 0.45, cad: 0.35
 };
 const TEAM_DB = [
-  { id:'mer', name:'Stella d\'Argento', short:'STA', color:'#00d2be', car:87, prestige:96, budget:138, low:false, minCar:82, pitCrewBias:-0.4, pitCrewSigma:0.35 },
-  { id:'fer', name:'Cavallino Rosso',   short:'CAV', color:'#e10600', car:87, prestige:99, budget:140, low:false, minCar:80, pitCrewBias:-0.3, pitCrewSigma:0.40 },
-  { id:'mcl', name:'Papaya Motorsport', short:'PAP', color:'#ff8000', car:86, prestige:95, budget:140, low:false, minCar:78, pitCrewBias:-0.6, pitCrewSigma:0.30 },
-  { id:'rbr', name:'Toro Energetico',   short:'TOR', color:'#1b3d8f', car:84, prestige:94, budget:138, low:false, minCar:76, pitCrewBias:-0.7, pitCrewSigma:0.25 },
-  { id:'rbu', name:'Toro Junior',       short:'TJR', color:'#6692ff', car:78, prestige:64, budget:112, low:false, minCar:68, isSatellite:true, maxCar:79, pitCrewBias:-0.2, pitCrewSigma:0.45 },
-  { id:'alp', name:'Azur Racing',       short:'AZR', color:'#0090ff', car:77, prestige:66, budget:115, low:true,  minCar:66, pitCrewBias: 0.1, pitCrewSigma:0.45 },
-  { id:'aud', name:'Audon',             short:'AUD', color:'#009b3a', car:75, prestige:70, budget:120, low:true,  minCar:64, pitCrewBias: 0.4, pitCrewSigma:0.50 },
-  { id:'has', name:'Acciaio Americano', short:'ACC', color:'#b6babd', car:73, prestige:58, budget:108, low:true,  minCar:62, isSatellite:true, maxCar:79, pitCrewBias: 0.3, pitCrewSigma:0.55 },
-  { id:'wil', name:'Grove Motorsport',    short:'GRV', color:'#00a0de', car:70, prestige:72, budget:118, low:true,  minCar:60, pitCrewBias: 0.2, pitCrewSigma:0.50 },
-  { id:'ast', name:'Verde Britannico',  short:'VRB', color:'#00594f', car:65, prestige:78, budget:132, low:true,  minCar:55, pitCrewBias:-0.1, pitCrewSigma:0.45 },
-  { id:'cad', name:'Detroit Motor Works',  short:'DTW', color:'#c9a227', car:60, prestige:52, budget:105, low:true,  minCar:50, pitCrewBias: 0.7, pitCrewSigma:0.60 }
+  { id:'mer', name:'Stella d\'Argento', short:'STA', color:'#00d2be', car:87, prestige:96, budget:138, low:false, minCar:82, pitCrewBias:-0.4, pitCrewSigma:0.35,
+    facilities:{ windTunnel:5, simulator:5, dyno:5, pitEquipment:4, operations:5 } },
+
+  { id:'fer', name:'Cavallino Rosso', short:'CAV', color:'#e10600', car:87, prestige:99, budget:140, low:false, minCar:80, pitCrewBias:-0.3, pitCrewSigma:0.40,
+    facilities:{ windTunnel:5, simulator:4, dyno:5, pitEquipment:4, operations:3 } },
+
+  { id:'mcl', name:'Papaya Motorsport', short:'PAP', color:'#ff8000', car:86, prestige:95, budget:140, low:false, minCar:78, pitCrewBias:-0.6, pitCrewSigma:0.30,
+    facilities:{ windTunnel:5, simulator:4, dyno:2, pitEquipment:5, operations:4 } },
+
+  { id:'rbr', name:'Toro Energetico', short:'TOR', color:'#1b3d8f', car:84, prestige:94, budget:138, low:false, minCar:76, pitCrewBias:-0.7, pitCrewSigma:0.25,
+    facilities:{ windTunnel:4, simulator:5, dyno:5, pitEquipment:5, operations:4 } },
+
+  { id:'rbu', name:'Toro Junior', short:'TJR', color:'#6692ff', car:78, prestige:64, budget:112, low:false, minCar:68, isSatellite:true, maxCar:79, pitCrewBias:-0.2, pitCrewSigma:0.45,
+    facilities:{ windTunnel:3, simulator:3, dyno:3, pitEquipment:3, operations:3 } },
+
+  { id:'alp', name:'Azur Racing', short:'AZR', color:'#0090ff', car:77, prestige:66, budget:115, low:true, minCar:66, pitCrewBias: 0.1, pitCrewSigma:0.45,
+    facilities:{ windTunnel:3, simulator:2, dyno:1, pitEquipment:2, operations:3 } },
+
+  { id:'aud', name:'Audon', short:'AUD', color:'#009b3a', car:75, prestige:70, budget:120, low:true, minCar:64, pitCrewBias: 0.4, pitCrewSigma:0.50,
+    facilities:{ windTunnel:3, simulator:3, dyno:4, pitEquipment:3, operations:2 } },
+
+  { id:'has', name:'Acciaio Americano', short:'ACC', color:'#b6babd', car:73, prestige:58, budget:108, low:true, minCar:62, isSatellite:true, maxCar:79, pitCrewBias: 0.3, pitCrewSigma:0.55,
+    facilities:{ windTunnel:2, simulator:2, dyno:2, pitEquipment:2, operations:2 } },
+
+  { id:'wil', name:'Grove Motorsport', short:'GRV', color:'#00a0de', car:70, prestige:72, budget:118, low:true, minCar:60, pitCrewBias: 0.2, pitCrewSigma:0.50,
+    facilities:{ windTunnel:2, simulator:2, dyno:2, pitEquipment:2, operations:3 } },
+
+  { id:'ast', name:'Verde Britannico', short:'VRB', color:'#00594f', car:65, prestige:78, budget:132, low:true, minCar:55, pitCrewBias:-0.1, pitCrewSigma:0.45,
+    facilities:{ windTunnel:4, simulator:3, dyno:2, pitEquipment:3, operations:2 } },
+
+  { id:'cad', name:'Detroit Motor Works', short:'DTW', color:'#c9a227', car:60, prestige:52, budget:105, low:true, minCar:50, pitCrewBias: 0.7, pitCrewSigma:0.60,
+    facilities:{ windTunnel:2, simulator:1, dyno:1, pitEquipment:2, operations:2 } }
 ];
 
 const AI_DRIVERS = [
@@ -926,7 +1017,7 @@ function aeroPaceMod(setupId, circuitType) {
    - stile pilota (push raddoppia, save dimezza)
    - usura gomme (sopra soglia, danno ×1.5)
    - posizione nello stint (half 0 / half 1 scalati sul weight dello stint) */
-function computeDamagePerTick(row, modeId, car, stintWeight, halfIndex) {
+function computeDamagePerTick(row, modeId, car, stintWeight, halfIndex, team) {
   const carExtra = Math.max(0, 85 - car) * DAMAGE_PER_CAR_POINT;
   const totalBase = DAMAGE_BASE_PER_RACE + carExtra;
   const modeFactor = modeId === 'push' ? DAMAGE_MULT_PUSH
@@ -934,7 +1025,8 @@ function computeDamagePerTick(row, modeId, car, stintWeight, halfIndex) {
                    :                     DAMAGE_MULT_NORMAL;
   const wearFactor = row.wear > DAMAGE_WEAR_THRESHOLD ? DAMAGE_WEAR_MULT : 1;
   const stintPortion = stintWeight * (halfIndex === 0 ? STINT_SPLIT : 1 - STINT_SPLIT);
-  return totalBase * modeFactor * wearFactor * stintPortion;
+  const facMult = team ? facilityDamageMult(team) : 1;     // v32
+  return totalBase * modeFactor * wearFactor * stintPortion * facMult;
 }
 
 /* DNF chance per tick in funzione del danno accumulato */
@@ -1053,11 +1145,12 @@ const SPONSOR_OBJECTIVES = [
   { id:'titolo',  tier:'hard',   name:'Ambizione Mondiale',      desc:'Vinci il Campionato Piloti in questa stagione (premio incassato con il budget della stagione successiva).', type:'title',  target:1, reward:90 }
 ];
 
-function generateSponsorOffers() {
+function generateSponsorOffers(team) {
+  const mult = team ? facilitySponsorMult(team) : 1;        // v32
   return SPONSOR_OBJECTIVES.map(o => ({
     id: o.id, name: o.name, desc: o.desc, type: o.type, tier: o.tier,
     target: o.target,
-    reward: Math.max(5, o.reward + irnd(-4, 6))
+    reward: Math.max(5, Math.round((o.reward + irnd(-4, 6)) * mult))
   }));
 }
 /* =========================================================================
@@ -1875,9 +1968,77 @@ const TRANSLATIONS = {
 'rrace.weather_pit_adapt':  '🛞 Pit per gomme da bagnato.',
 'rrace.weather_stay_out':   '⚠️ Resti fuori con gomme sbagliate: attenzione.',
 'live.stint_header': 'Gara — {name} · giro {lap}/{total}',
+/* ---- HQ ---- */
+'hq.title':            'Quartier Generale',
+'hq.total_levels':     'Livelli totali',
+'hq.maintenance':      'Manutenzione annua',
+'hq.per_level':        'M$/livello',
+'hq.dev_budget':       'Budget sviluppo',
+'hq.level_short':      'LIV.',
+'hq.max_badge':        '🏆 STRUTTURA AL MASSIMO',
+'hq.upgrade_btn':      'POTENZIA a LIV. {lv} — {cost} M$',
+'hq.upgrade_insufficient': '💸 Servono {cost} M$',
+'hq.already_max':      'Struttura già al massimo',
+'hq.upgrade_confirm':  'Potenziare {name} a Liv. {lv}? Costo: {cost} M$',
+'hq.upgrade_yes':      'Potenzia',
+'hq.upgrade_done':     '✅ {name} → Liv. {lv}',
+'hq.note_title':       'Nota',
+'hq.note':             'Le strutture appartengono alla scuderia, non al pilota. Se firmi per un altro team, manterrai solo i bonus della nuova sede. La manutenzione viene detratta automaticamente dal budget della prossima stagione.',
+
+/* ---- Facility (nomi + descrizioni) ---- */
+'fac.windTunnel.name':   'Galleria del Vento & CFD',
+'fac.windTunnel.desc':   '+4% guadagno e −1.0% rischio per ogni livello su pacchetti Aerodinamici e Telaio.',
+'fac.simulator.name':    'Simulatore DIL & Driver Academy',
+'fac.simulator.desc':    '+0.15 sc di setup bonus e +3% crescita attributi per livello su tutti i piloti del team.',
+'fac.dyno.name':         'Banchi Prova Power Unit',
+'fac.dyno.desc':         '+4% guadagno e −1.0% rischio per livello su Power Unit; −5% usura PU e −5% danno meccanico per livello.',
+'fac.pitEquipment.name': 'Attrezzatura Pit Stop & Palestra',
+'fac.pitEquipment.desc': '−0.08s di bias crew e −0.8% probabilità di fumble per livello.',
+'fac.operations.name':   'Centro Commerciale & Produzione',
+'fac.operations.desc':   '+5% premi sponsor, −3% costi R&D e −3% Luxury Tax per livello.',
+
+/* ---- RD: griglia tecnica ---- */
+'rd.tech_grid':        '🏁 Griglia tecnica',
+'rd.tech_leader':      'Riferimento tecnico del campionato',
+'rd.tech_from_leader': 'dal leader',
+'rd.tech_from_next':   'dal prossimo',
  },
 
   en: {
+  /* ---- HQ ---- */
+'hq.title':            'Headquarters',
+'hq.total_levels':     'Total levels',
+'hq.maintenance':      'Annual maintenance',
+'hq.per_level':        'M$/level',
+'hq.dev_budget':       'Development budget',
+'hq.level_short':      'LVL.',
+'hq.max_badge':        '🏆 STRUCTURE AT MAX LEVEL',
+'hq.upgrade_btn':      'UPGRADE to LVL. {lv} — {cost} M$',
+'hq.upgrade_insufficient': '💸 Need {cost} M$',
+'hq.already_max':      'Facility already maxed',
+'hq.upgrade_confirm':  'Upgrade {name} to Lvl. {lv}? Cost: {cost} M$',
+'hq.upgrade_yes':      'Upgrade',
+'hq.upgrade_done':     '✅ {name} → Lvl. {lv}',
+'hq.note_title':       'Note',
+'hq.note':             'Facilities belong to the team, not the driver. If you sign for another team, you will only keep the new home\'s bonuses. Maintenance is automatically deducted from next season\'s budget.',
+
+/* ---- Facility (names + descriptions) ---- */
+'fac.windTunnel.name':   'Wind Tunnel & CFD',
+'fac.windTunnel.desc':   '+4% gain and −1.0% risk per level on Aero and Chassis packages.',
+'fac.simulator.name':    'DIL Simulator & Driver Academy',
+'fac.simulator.desc':    '+0.15 sc setup bonus and +3% attribute growth per level for all team drivers.',
+'fac.dyno.name':         'Power Unit Test Benches',
+'fac.dyno.desc':         '+4% gain and −1.0% risk per level on Power Unit; −5% PU wear and −5% mechanical damage per level.',
+'fac.pitEquipment.name': 'Pit Stop Equipment & Gym',
+'fac.pitEquipment.desc': '−0.08s crew bias and −0.8% fumble chance per level.',
+'fac.operations.name':   'Commercial Center & Production',
+'fac.operations.desc':   '+5% sponsor rewards, −3% R&D costs and −3% Luxury Tax per level.',
+
+/* ---- RD: technical grid ---- */
+'rd.tech_grid':        '🏁 Technical grid',
+'rd.tech_leader':      'Championship technical reference',
+'rd.tech_from_leader': 'from leader',
+'rd.tech_from_next':   'from next',
   'live.stint_header': 'Race — {name} · lap {lap}/{total}',
   'live.radar_title': 'Weather radar',
 'live.radar_now': 'Now: {name}',
@@ -3048,10 +3209,21 @@ migrated.lang = SUPPORTED_LANGS.includes(migrated.lang) ? migrated.lang : UI_LAN
           car: Number.isFinite(t.car) ? clamp(t.car, 40, 99) : 70,
       minCar: Number.isFinite(t.minCar) ? t.minCar : 40,
       prestige: Number.isFinite(t.prestige) ? t.prestige : 70,
-      pitCrewBias:  Number.isFinite(t.pitCrewBias)  ? t.pitCrewBias
+         pitCrewBias:  Number.isFinite(t.pitCrewBias)  ? t.pitCrewBias
                   : ((TEAM_DB.find(x => x.id === t.id) || {}).pitCrewBias  ?? 0),
       pitCrewSigma: Number.isFinite(t.pitCrewSigma) ? t.pitCrewSigma
-                  : ((TEAM_DB.find(x => x.id === t.id) || {}).pitCrewSigma ?? 0.40)
+                  : ((TEAM_DB.find(x => x.id === t.id) || {}).pitCrewSigma ?? 0.40),
+      facilities: (() => {
+        const defFac = defaultFacilitiesFor(t.prestige || 70);
+        const rawFac = (t.facilities && typeof t.facilities === 'object') ? t.facilities : defFac;
+        return {
+          windTunnel:   Number.isFinite(rawFac.windTunnel)   ? clamp(Math.round(rawFac.windTunnel),   1, 5) : defFac.windTunnel,
+          simulator:    Number.isFinite(rawFac.simulator)    ? clamp(Math.round(rawFac.simulator),    1, 5) : defFac.simulator,
+          dyno:         Number.isFinite(rawFac.dyno)         ? clamp(Math.round(rawFac.dyno),         1, 5) : defFac.dyno,
+          pitEquipment: Number.isFinite(rawFac.pitEquipment) ? clamp(Math.round(rawFac.pitEquipment), 1, 5) : defFac.pitEquipment,
+          operations:   Number.isFinite(rawFac.operations)   ? clamp(Math.round(rawFac.operations),   1, 5) : defFac.operations
+        };
+      })()
     };
   });
   const p = migrated.player;
@@ -3222,14 +3394,17 @@ function recordRaceTelemetry(weatherName, safetyCar) {
 
 function newCareer(p) {
   seedRng();
-
-  const teams = TEAM_DB.map(t => ({
-    ...t,
-    budgetNow: Math.round(t.budget * (0.9 + rng() * 0.2)),
-    rdSkill: defaultRDSkillFor(t.prestige),
-    rdHistory: [],
-    simCharges: 0
-  }));
+const teams = TEAM_DB.map(t => ({
+  ...t,
+  budgetNow: Math.round(t.budget * (0.9 + rng() * 0.2)),
+  rdSkill: defaultRDSkillFor(t.prestige),
+  rdHistory: [],
+  simCharges: 0,
+  // v32: garantisci che ogni team abbia facilities valide
+  facilities: t.facilities
+    ? { ...t.facilities }
+    : defaultFacilitiesFor(t.prestige)
+}));
 
   const drivers = AI_DRIVERS.map(d => ({
     id: d.id, name: d.name, nat: d.nat, teamId: d.team,
@@ -3295,8 +3470,8 @@ function newCareer(p) {
     playerStrategy: null,
     strategyLabel: null,
     lastSafetyCar: false,
-    sponsor: null,
-    sponsorOffers: generateSponsorOffers(),
+       sponsor: null,
+    sponsorOffers: generateSponsorOffers(teams.find(t => t.id === p.teamId)),
     sponsorHistory: [],
     rookiePoolUsed: [],
     totals: { seasons:0, races:0, wins:0, podiums:0, poles:0, titles:0, points:0, dnf:0,
@@ -3455,10 +3630,11 @@ function rdOverCapMultiplier(budgetNow) {
   return 1 + (RD_OVER_CAP_MAX_MULT - 1) * Math.min(1, overRatio);
 }
 
-function applyLuxuryTax(rawBudget) {
+function applyLuxuryTax(rawBudget, team) {
   if (rawBudget <= BUDGET_CAP) return rawBudget;
   const excess = rawBudget - BUDGET_CAP;
-  return BUDGET_CAP + excess * (1 - LUXURY_TAX_RATE);
+  const rate = team ? facilityLuxuryTaxRate(team) : LUXURY_TAX_RATE;
+  return BUDGET_CAP + excess * (1 - rate);
 }
 
 function computeSeasonBudgetForTeam(team, standingPos, numTeams) {
@@ -3467,20 +3643,47 @@ function computeSeasonBudgetForTeam(team, standingPos, numTeams) {
   const posBonus = 0.7 + 0.7 * Math.pow(Math.max(0, posRatio), 0.8);
   const prestigeFactor = 0.9 + ((team.prestige || 70) - 65) * 0.006;
   const noise = rnd(0.92, 1.08);
-   const raw = Math.max(85, base * posBonus * prestigeFactor * noise);
-  const taxed = applyLuxuryTax(raw);
+  const raw = Math.max(85, base * posBonus * prestigeFactor * noise);
+  const taxed = applyLuxuryTax(raw, team);                    // v32: passa team
   return Math.round(taxed);
 }
-
 function updateTeamBudgetsForNextSeason(tStandings) {
   const numTeams = tStandings.length;
   tStandings.forEach((tStanding, i) => {
     const team = teamById(tStanding.id);
     if (!team) return;
-    team.budgetNow = computeSeasonBudgetForTeam(team, i, numTeams);
+    let b = computeSeasonBudgetForTeam(team, i, numTeams);
+    b -= facilityMaintenanceCost(team);                       // v32
+    team.budgetNow = Math.max(0, Math.round(b));
   });
 }
+function processAIFacilityUpgrades() {
+  S.teams.forEach(team => {
+    if (team.id === S.player.teamId) return;
 
+    const maintenance = facilityMaintenanceCost(team);
+    const reserve = 35;
+    const spare = (team.budgetNow || 0) - maintenance - reserve;
+    if (spare < 12) return;
+
+    const candidates = FACILITY_IDS.filter(f => facilityLevel(team, f) < FACILITY_MAX_LEVEL);
+    if (!candidates.length) return;
+
+    const r = rng();
+    let pick;
+    if (team.car >= 84)       pick = r < 0.5 ? 'windTunnel' : r < 0.8 ? 'dyno' : 'simulator';
+    else if (team.car >= 75)  pick = r < 0.25 ? 'windTunnel' : r < 0.5 ? 'operations' : r < 0.75 ? 'pitEquipment' : 'simulator';
+    else                      pick = r < 0.5 ? 'operations' : 'pitEquipment';
+    if (!candidates.includes(pick)) pick = candidates[0];
+
+    const cost = nextFacilityUpgradeCost(team, pick);
+    if (cost == null || cost > spare) return;
+    if (rng() > 0.55) return;   // non sempre reattivi
+
+    team.budgetNow -= cost;
+    team.facilities[pick] = facilityLevel(team, pick) + 1;
+  });
+}
 /* =========================================================================
    ================== RUOLI / CONTRATTI AI / REPUTAZIONE ===================
    ========================================================================= */
@@ -3559,50 +3762,54 @@ function rdRoleGainMult() {
    ============================== R&D SYSTEM ===============================
    ========================================================================= */
 
-function rdEffectiveCost(stratId, teamCar, budgetNow) {
+function rdEffectiveCost(stratId, teamCar, budgetNow, team) {
   const s = RD_STRATEGIES[stratId];
   const carFactor = 1 + Math.max(0, teamCar - 65) * 0.02;
   const smallTeamDiscount = teamCar < 72 ? 0.60 : 1;
   const capMult = rdOverCapMultiplier(budgetNow);
-  return Math.round(s.cost * carFactor * capMult * smallTeamDiscount);
+  const facMult = team ? facilityRDCostMult(team) : 1;                 // v32
+  return Math.round(s.cost * carFactor * capMult * smallTeamDiscount * facMult);
 }
-function rdEffectiveFail(stratId, teamCar, teamRdSkill, pkgId, simCharges) {
+
+function rdEffectiveFail(stratId, teamCar, teamRdSkill, pkgId, simCharges, team) {
   const s = RD_STRATEGIES[stratId];
   const pkg = rdPackageById(pkgId);
   const carFactor = Math.max(0, teamCar - 70) * 0.008;
   const skillFactor = (0.7 - (teamRdSkill || 0.6)) * 0.15;
   const buff = (pkg.id !== 'sim' && (simCharges || 0) > 0) ? SIM_BUFF_FAIL_REDUCTION : 0;
   const smallTeamRelief = teamCar < 75 ? 0.70 : 1;
-  return clamp((s.failChance + carFactor + skillFactor + pkg.failAdd - buff) * smallTeamRelief, 0.03, 0.65);
+  const facDelta = team ? facilityRDFailDelta(team, pkgId) : 0;        // v32
+  return clamp((s.failChance + carFactor + skillFactor + pkg.failAdd + facDelta - buff) * smallTeamRelief, 0.03, 0.65);
 }
 
-function rdEffectiveGain(stratId, teamCar, teamRdSkill, pkgId) {
+function rdEffectiveGain(stratId, teamCar, teamRdSkill, pkgId, team) {
   const s = RD_STRATEGIES[stratId];
   const pkg = rdPackageById(pkgId);
   const carDiminish = clamp(1 - Math.max(0, teamCar - 65) * 0.012, 0.6, 1);
   const skillMult = 0.85 + (teamRdSkill || 0.6) * 0.35;
+  const facMult = team ? facilityRDGainMult(team, pkgId) : 1;          // v32
   return {
-    min: s.gainMin * carDiminish * skillMult * pkg.gainMult,
-    max: s.gainMax * carDiminish * skillMult * pkg.gainMult
+    min: s.gainMin * carDiminish * skillMult * pkg.gainMult * facMult,
+    max: s.gainMax * carDiminish * skillMult * pkg.gainMult * facMult
   };
 }
 
 function applyRD(team, stratId, pkgId, { budgetRef = null, logTarget = null, logSuffix = '' } = {}) {
   const strat = RD_STRATEGIES[stratId];
   const currentBudget = budgetRef ? budgetRef.value : (team.budgetNow || 0);
-  const actualCost = rdEffectiveCost(stratId, team.car, currentBudget);
+  const actualCost = rdEffectiveCost(stratId, team.car, currentBudget, team);
 
   if (currentBudget < actualCost) {
     return { ok: false, reason: 'budget', cost: actualCost };
   }
 
-  const gains = rdEffectiveGain(stratId, team.car, team.rdSkill, pkgId);
+  const gains = rdEffectiveGain(stratId, team.car, team.rdSkill, pkgId, team);
   /* v22: moltiplicatore di ruolo per il team del giocatore */
   if (team.id === S.player.teamId) {
     const m = rdRoleGainMult();
     gains.min *= m; gains.max *= m;
   }
-  const failChance = rdEffectiveFail(stratId, team.car, team.rdSkill, pkgId, team.simCharges || 0);
+  const failChance = rdEffectiveFail(stratId, team.car, team.rdSkill, pkgId, team.simCharges || 0, team);
 
   if (budgetRef) budgetRef.value = Math.max(0, budgetRef.value - actualCost);
   else team.budgetNow = Math.max(0, (team.budgetNow || 0) - actualCost);
@@ -3699,10 +3906,10 @@ function doRD(pkgId, stratId, silent) {
 function autoRD() {
   let guard = 0;
   while (S.rdOpen && S.rdDone < 2 && guard++ < 4) {
-    const team = playerTeam();
-    const consCost = rdEffectiveCost('cons', team.car, S.budget);
-    const balCost  = rdEffectiveCost('bal',  team.car, S.budget);
-    const aggCost  = rdEffectiveCost('agg',  team.car, S.budget);
+        const team = playerTeam();
+    const consCost = rdEffectiveCost('cons', team.car, S.budget, team);
+    const balCost  = rdEffectiveCost('bal',  team.car, S.budget, team);
+    const aggCost  = rdEffectiveCost('agg',  team.car, S.budget, team);
 
     let stratId = null;
     if (S.budget >= aggCost * 1.2) stratId = 'agg';
@@ -3871,11 +4078,13 @@ tyreDelta  += ageMod * 0.25;
   speedDelta += luck;
 
   /* v22: difficoltà modula la progressione */
-  const pm = diff().progMult;
-  const boost = v => v > 0 ? v * pm : v;
-  speedDelta = boost(speedDelta);
-  consDelta  = boost(consDelta);
-  tyreDelta  = boost(tyreDelta);
+ const pm = diff().progMult;
+const playerT = playerTeam();
+const simMult = playerT ? facilityDriverGrowthMult(playerT) : 1;          // v32
+const boost = v => v > 0 ? v * pm * simMult : v;
+speedDelta = boost(speedDelta);
+consDelta  = boost(consDelta);
+tyreDelta  = boost(tyreDelta);
 
   const reasons = [];
   reasons.push(...speedReasons);
@@ -3895,9 +4104,13 @@ tyreDelta  += ageMod * 0.25;
 }
 
 function applyAttr(current, frac, delta) {
-  const total = clamp(current + (frac || 0) + delta, 30, 99);
+  const HARD_CAP = 99.0;                                       // v32
+  const total = clamp(current + (frac || 0) + delta, 30, HARD_CAP);
   const value = Math.round(total);
-  return { value, frac: round3(total - value) };
+  let nextFrac = round3(total - value);
+  // v32: al cap il frac non può accumulare positivamente
+  if (value >= HARD_CAP && nextFrac > 0) nextFrac = 0;
+  return { value, frac: nextFrac };
 }
 
 function applyPlayerProgression(p, progression) {
@@ -3917,13 +4130,21 @@ function applyRivalryBonus(p) {
     return { applied: 0, deltas: { speed: 0, consistency: 0, tyres: 0 } };
   }
   const bonuses = Math.floor(S.rivalryPoints / RIVALRY_BONUS_THRESHOLD);
-  const deltas = { speed: 0, consistency: 0, tyres: 0 };
+  const deltas  = { speed: 0, consistency: 0, tyres: 0 };
   for (let i = 0; i < bonuses; i++) {
     const pick = irnd(0, 2);
     if (pick === 0) deltas.speed += RIVALRY_BONUS_DELTA;
     else if (pick === 1) deltas.consistency += RIVALRY_BONUS_DELTA;
     else deltas.tyres += RIVALRY_BONUS_DELTA;
   }
+
+  // v32: cap rivalità — i bonus non possono spingere gli attributi oltre 95
+  const RIVALRY_ATTR_CAP = 95.0;
+  const roomFor = (attr, frac) => Math.max(0, RIVALRY_ATTR_CAP - (attr + (frac || 0)));
+  deltas.speed       = Math.min(deltas.speed,       roomFor(p.speed,       p.speedFrac));
+  deltas.consistency = Math.min(deltas.consistency, roomFor(p.consistency, p.consFrac));
+  deltas.tyres       = Math.min(deltas.tyres,       roomFor(p.tyres,       p.tyresFrac));
+
   const s = applyAttr(p.speed,       p.speedFrac, deltas.speed);
   const c = applyAttr(p.consistency, p.consFrac,  deltas.consistency);
   const t = applyAttr(p.tyres,       p.tyresFrac, deltas.tyres);
@@ -4002,10 +4223,10 @@ function processAIRDActivity(tStandings, light) {
       else if (team.budgetNow >= 25) stratId = r < 0.6 ? 'cons' : 'bal';
       else stratId = 'cons';
 
-      const cost = rdEffectiveCost(stratId, team.car, team.budgetNow);
+           const cost = rdEffectiveCost(stratId, team.car, team.budgetNow, team);
       if (team.budgetNow < cost) continue;
 
-      const balCost = rdEffectiveCost('bal', team.car, team.budgetNow);
+      const balCost = rdEffectiveCost('bal', team.car, team.budgetNow, team);
       let pkgId;
       if (i === 0 && actions >= 2 && rng() < 0.25) pkgId = 'sim';
       else if (team.car <= (team.minCar || 50) + 5 || team.budgetNow < balCost * 1.6) pkgId = 'chass';
@@ -4045,13 +4266,16 @@ function processAIEvolutionAndRetirements() {
       S.powerUnits[newRookie.id] = { used: 1, wear: 0 };
       survivingDrivers.push(newRookie);
     } else {
-      let driverDelta = 0;
-      if (d.age <= 24 && d.ovr >= 87)     driverDelta = rnd(-0.2, 0.8);
-      else if (d.age <= 24)               driverDelta = rnd(0.8, 2.5);
-      else if (d.age <= 32)               driverDelta = rnd(-0.3, 0.9);
-      else                                driverDelta = rnd(-1.2, 0.2);
+     let driverDelta = 0;
+if (d.age <= 24 && d.ovr >= 87)     driverDelta = rnd(-0.2, 0.8);
+else if (d.age <= 24)               driverDelta = rnd(0.8, 2.5);
+else if (d.age <= 32)               driverDelta = rnd(-0.3, 0.9);
+else                                driverDelta = rnd(-1.2, 0.2);
 
-      d.ovr = Math.round(clamp(d.ovr + driverDelta, 62, 97));
+const dTeam = teamById(d.teamId);                                          // v32
+if (driverDelta > 0 && dTeam) driverDelta *= facilityDriverGrowthMult(dTeam);
+
+d.ovr = Math.round(clamp(d.ovr + driverDelta, 62, 97));
       survivingDrivers.push(d);
     }
   });
@@ -4400,7 +4624,8 @@ function endSeason() {
   assignTeamRoles();
   S.mateTension = Math.round(S.mateTension * 0.5);
 
-  processAIRDActivity(tStandings, false);
+   processAIRDActivity(tStandings, false);
+  processAIFacilityUpgrades();                    // v32
   updateTeamBudgetsForNextSeason(tStandings);
   updateTeamPerformance(tStandings);
 
@@ -4569,7 +4794,7 @@ function startNewSeason() {
   S.strategyLabel = null;
   S.lastSafetyCar = false;
   S.sponsor = null;
-  S.sponsorOffers = generateSponsorOffers();
+  S.sponsorOffers = generateSponsorOffers(playerTeam());
   S.quali = null;
   S.radioLog = [];
   S.reviewingFromStrategy = false;
@@ -5309,7 +5534,7 @@ function continueCareer() {
   if (!S) { toast(t('toast.save_corrupt'), 'bad'); return; }
   RNG_STATE = S.rngState >>> 0;
   if (!S.sponsor && (!S.sponsorOffers || !S.sponsorOffers.length) && S.round < CALENDAR.length) {
-    S.sponsorOffers = generateSponsorOffers();
+    S.sponsorOffers = generateSponsorOffers(playerTeam());
   }
   if (!S.rivalId) S.rivalId = selectRivalFromDriverList(S.player);
   if (S.drivers.some(d => !d.role)) assignTeamRoles(S);
@@ -5320,12 +5545,13 @@ function continueCareer() {
 /* ---------- HUB ---------- */
 function viewHub() {
   const p = S.player, t2 = playerTeam();
-  const tabs = [
-    ['race',  t('tab.race')],
-    ['stand', t('tab.stand')],
-    ['rd',    t('tab.rd')],
-    ['career',t('tab.career')]
-  ];
+ const tabs = [
+  ['race',   t('tab.race')],
+  ['stand',  t('tab.stand')],
+  ['rd',     t('tab.rd')],
+  ['hq',     '🏢 HQ'],              // v32
+  ['career', t('tab.career')]
+];
   const pPos = playerPos();
   const trait = p.trait && TRAITS[p.trait];
 
@@ -5389,7 +5615,7 @@ function viewHub() {
     ${rivalCard()}
     ${roleCard()}
 
-    <div class="grid grid-cols-4 gap-2 mb-4 sticky top-2 z-20" role="tablist" aria-label="Sezioni carriera" data-tablist>
+    <div class="grid grid-cols-5 gap-2 mb-4 sticky top-2 z-20" role="tablist" aria-label="Sezioni carriera" data-tablist>
       ${tabs.map(([id, lbl]) => `
         <button type="button" role="tab" id="tab-${id}" aria-selected="${S.tab === id}"
           aria-controls="panel-main" tabindex="${S.tab === id ? 0 : -1}"
@@ -5400,10 +5626,11 @@ function viewHub() {
     </div>
 
     <div id="panel-main" role="tabpanel" aria-labelledby="tab-${S.tab}" tabindex="0">
-      ${ S.tab === 'race'   ? tabRace()
-       : S.tab === 'stand'  ? tabStandings()
-       : S.tab === 'rd'     ? tabRD()
-       : tabCareer() }
+   ${ S.tab === 'race'   ? tabRace()
+ : S.tab === 'stand'  ? tabStandings()
+ : S.tab === 'rd'     ? tabRD()
+ : S.tab === 'hq'     ? tabHQ()          // v32
+ : tabCareer() }
     </div>
   </div>`;
 }
@@ -5468,7 +5695,84 @@ function miniStat(l, v) {
     <div class="font-black text-sm">${v}</div>
   </div>`;
 }
+function tabHQ() {
+  const team = playerTeam();
+  const totalLv = facilityTotalLevels(team);
+  const maint   = facilityMaintenanceCost(team);
 
+  return `
+  <div class="anim space-y-4">
+    <div class="card p-5">
+      <div class="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <div class="text-[11px] uppercase tracking-wider text-slate-400">${esc(t('hq.title'))}</div>
+          <div class="font-black text-xl mt-0.5">${esc(team.name)}</div>
+          <div class="text-[11px] text-slate-400 mt-0.5">
+            ${esc(t('hq.total_levels'))}: <b class="text-slate-200">${totalLv}</b> / ${FACILITY_IDS.length * FACILITY_MAX_LEVEL}
+          </div>
+        </div>
+        <div class="text-right">
+          <div class="text-[11px] uppercase tracking-wider text-slate-400">${esc(t('hq.maintenance'))}</div>
+          <div class="font-black text-lg text-racing">${maint.toFixed(1)} M$</div>
+          <div class="text-[10px] text-slate-500">${FACILITY_MAINTENANCE_PER_LEVEL} ${esc(t('hq.per_level'))}</div>
+        </div>
+      </div>
+      <div class="bg-carbon3 rounded-xl p-3 flex items-center justify-between">
+        <span class="text-[11px] uppercase tracking-wider text-slate-400">${esc(t('hq.dev_budget'))}</span>
+        <span class="font-black text-lg text-gold">${Math.round(S.budget)} M$</span>
+      </div>
+    </div>
+
+    <div class="space-y-3">
+      ${FACILITY_IDS.map(fac => {
+        const meta  = FACILITY_META[fac];
+        const lv    = facilityLevel(team, fac);
+        const cost  = nextFacilityUpgradeCost(team, fac);
+        const atMax = cost == null;
+        const afford= !atMax && S.budget >= cost;
+        const pct   = (lv / FACILITY_MAX_LEVEL) * 100;
+        const color = lv >= 5 ? '#ffd447' : lv >= 4 ? '#e10600' : lv >= 3 ? '#0090ff' : '#64748b';
+
+        return `
+        <div class="card p-4">
+          <div class="flex items-start gap-3 mb-3">
+            <div class="text-3xl shrink-0">${meta.icon}</div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between gap-2">
+                <div class="font-black">${esc(t('fac.' + fac + '.name'))}</div>
+                <div class="text-xs font-black shrink-0" style="color:${color}">${esc(t('hq.level_short'))} ${lv}/5</div>
+              </div>
+              <div class="text-[11px] text-slate-400 mt-0.5 leading-relaxed">${esc(t('fac.' + fac + '.desc'))}</div>
+            </div>
+          </div>
+
+          <div class="h-2 rounded-full bg-carbon3 overflow-hidden mb-3">
+            <div class="h-full rounded-full transition-all duration-500"
+                 style="width:${pct}%;background:${color}"></div>
+          </div>
+
+          ${atMax ? `
+            <div class="text-center text-[11px] text-gold font-bold py-2 bg-gold/10 border border-gold/40 rounded-xl">
+              ${esc(t('hq.max_badge'))}
+            </div>` : `
+            <button type="button" data-action="facility-upgrade" data-fac-id="${fac}"
+              ${afford ? '' : 'disabled'}
+              class="w-full py-3 rounded-xl text-sm font-black transition active:scale-[.98]
+                     ${afford ? 'bg-racing neon text-white hover:brightness-110'
+                              : 'bg-carbon3 text-slate-600 cursor-not-allowed'}">
+              ${afford
+                ? esc(t('hq.upgrade_btn', { lv: lv + 1, cost }))
+                : esc(t('hq.upgrade_insufficient', { cost }))}
+            </button>`}
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div class="bg-carbon2 rounded-2xl p-4 neon-soft text-[11px] text-slate-400 leading-relaxed">
+      💡 <b class="text-slate-300">${esc(t('hq.note_title'))}</b>: ${esc(t('hq.note'))}
+    </div>
+  </div>`;
+}
 function tabRace() {
   const done = S.round >= CALENDAR.length;
 
@@ -5561,35 +5865,33 @@ function tabStandings() {
           const team = teamById(d.teamId);
           const isRival = d.id === S.rivalId;
           return `
-          <div class="flex items-center gap-3 px-4 py-2.5 ${d.isPlayer ? 'bg-racing/15' : isRival ? 'bg-racing/10' : ''}">
-            <span class="w-6 text-center font-black text-sm ${i === 0 ? 'text-gold' : 'text-slate-400'}">${i + 1}</span>
-            <span class="w-1.5 h-6 rounded-sm shrink-0" style="background:${safeColor(team?.color)}"></span>
-            <span class="text-base">${esc(d.nat)}</span>
-            <span class="flex-1 truncate text-sm ${d.isPlayer ? 'font-black' : isRival ? 'font-bold text-racing' : 'font-medium text-slate-300'}">
+                  <div class="flex items-center gap-2 px-3 py-2.5 min-w-0 ${d.isPlayer ? 'bg-racing/15' : isRival ? 'bg-racing/10' : ''}">
+            <span class="w-5 shrink-0 text-center font-black text-sm ${i === 0 ? 'text-gold' : 'text-slate-400'}">${i + 1}</span>
+            <span class="w-1 h-5 rounded-sm shrink-0" style="background:${safeColor(team?.color)}"></span>
+            <span class="text-base shrink-0 leading-none">${esc(d.nat)}</span>
+            <span class="flex-1 min-w-0 truncate text-sm ${d.isPlayer ? 'font-black' : isRival ? 'font-bold text-racing' : 'font-medium text-slate-300'}">
               ${esc(d.name)}${isRival ? ' <span class="text-[10px]">⚔️</span>' : ''}
             </span>
-            <span class="text-[10px] text-slate-400 hidden sm:inline">${esc(team?.short || '')}</span>
-            <span class="w-8 text-right text-[11px] text-slate-400">${d.ovr}</span>
-            <span class="w-10 text-right font-black">${d.pts}</span>
+            <span class="w-6 shrink-0 text-right text-[10px] text-slate-400 tabular-nums">${d.ovr}</span>
+            <span class="w-8 shrink-0 text-right font-black tabular-nums">${d.pts}</span>
           </div>`;
         }).join('')}
       </div>
     </div>
     <div class="card overflow-hidden">
       <div class="px-4 py-3 border-b border-slate-800 font-black text-sm uppercase tracking-wider">${esc(t('stand.teams'))}</div>
-      <div class="divide-y divide-slate-800/60">
+           <div class="divide-y divide-slate-800/60">
         ${ts.map((team, i) => {
           const isMine = team.id === S.player.teamId;
           const b = isMine ? S.budget : (team.budgetNow || team.budget);
           const overCap = b > BUDGET_CAP;
           return `
-          <div class="flex items-center gap-3 px-4 py-2.5 ${isMine ? 'bg-racing/15' : ''}">
-            <span class="w-6 text-center font-black text-sm ${i === 0 ? 'text-gold' : 'text-slate-400'}">${i + 1}</span>
-            <span class="w-1.5 h-6 rounded-sm shrink-0" style="background:${safeColor(team.color)}"></span>
-            <span class="flex-1 truncate text-sm font-semibold">${esc(team.name)}</span>
-            <span class="text-[10px] hidden sm:inline ${overCap ? 'text-racing font-bold' : 'text-slate-400'}">BUD ${Math.round(b)}M$${overCap ? ' ⚠️' : ''}</span>
-            <span class="text-[10px] text-slate-400">CAR ${Math.round(team.car)}</span>
-            <span class="w-12 text-right font-black">${team.pts}</span>
+          <div class="grid grid-cols-[1.5rem_0.25rem_1fr_2rem_2.5rem] items-center gap-x-2 px-3 py-2.5 ${isMine ? 'bg-racing/15' : ''}">
+            <span class="text-center font-black text-sm ${i === 0 ? 'text-gold' : 'text-slate-400'}">${i + 1}</span>
+            <span class="h-5 rounded-sm" style="background:${safeColor(team.color)}"></span>
+            <span class="truncate text-sm font-semibold">${esc(team.name)}</span>
+            <span class="text-right text-[10px] ${overCap ? 'text-racing font-bold' : 'text-slate-400'} tabular-nums">${Math.round(b)}M$${overCap ? '⚠️' : ''}</span>
+            <span class="text-right font-black tabular-nums">${team.pts}</span>
           </div>`;
         }).join('')}
       </div>
@@ -5645,23 +5947,22 @@ function rdCarStandingsCard() {
   const teamBehind = myRank < sorted.length ? sorted[myRank] : null;
   const gapToBehind = teamBehind ? round1(myTeam.car - teamBehind.car) : 0;
 
-  /* Scala fissa: prevedibile, non "balla" quando arriva un update */
   const SCALE_MIN = 45, SCALE_MAX = 99, span = SCALE_MAX - SCALE_MIN;
 
   let summary;
   if (myRank === 1) {
-    summary = `<span class="text-gold font-bold">Riferimento tecnico del campionato</span>`;
+    summary = `<span class="text-gold font-bold">${esc(t('rd.tech_leader'))}</span>`;
   } else if (teamBehind) {
-    summary = `<span class="text-racing">dal leader <b>-${gapToLeader}</b></span>
-             · <span class="text-emerald-400">dal prossimo <b>+${gapToBehind}</b></span>`;
+    summary = `<span class="text-racing">${esc(t('rd.tech_from_leader'))} <b>-${gapToLeader}</b></span>
+             · <span class="text-emerald-400">${esc(t('rd.tech_from_next'))} <b>+${gapToBehind}</b></span>`;
   } else {
-    summary = `<span class="text-racing">dal leader <b>-${gapToLeader}</b></span>`;
+    summary = `<span class="text-racing">${esc(t('rd.tech_from_leader'))} <b>-${gapToLeader}</b></span>`;
   }
 
   return `
   <div class="card overflow-hidden mb-4">
     <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2 flex-wrap">
-      <span class="text-[11px] uppercase tracking-wider text-slate-400">🏁 Griglia tecnica</span>
+      <span class="text-[11px] uppercase tracking-wider text-slate-400">${esc(t('rd.tech_grid'))}</span>
       <span class="text-[11px] text-slate-400">
         <b class="text-white">P${myRank}</b>/${sorted.length} · ${summary}
       </span>
@@ -5689,10 +5990,10 @@ function rdCarStandingsCard() {
   </div>`;
 }
 function tabRD() {
-  const t2 = playerTeam();
-  const consCost = rdEffectiveCost('cons', t2.car, S.budget);
-  const balCost  = rdEffectiveCost('bal',  t2.car, S.budget);
-  const aggCost  = rdEffectiveCost('agg',  t2.car, S.budget);
+   const t2 = playerTeam();
+  const consCost = rdEffectiveCost('cons', t2.car, S.budget, t2);
+  const balCost  = rdEffectiveCost('bal',  t2.car, S.budget, t2);
+  const aggCost  = rdEffectiveCost('agg',  t2.car, S.budget, t2);
   const simCharges = t2.simCharges || 0;
 
   const overCapMult = rdOverCapMultiplier(S.budget);
@@ -5718,8 +6019,8 @@ function tabRD() {
         max: (t2.isSatellite && typeof t2.maxCar === 'number') ? t2.maxCar : 99
       })}
       ${(() => {
-        const rate = pitCrewRating(t2);
-        const bias = t2.pitCrewBias || 0;
+               const rate = pitCrewRating(t2);
+        const bias = (t2.pitCrewBias || 0) + facilityPitBiasDelta(t2);   // v32
         return `<div class="text-[10px] text-slate-400 mt-2">
           🧑🔧 ${esc(t('strat.pit_crew'))}: <b class="${rate.cls}">${esc(rate.label)}</b>
           <span class="text-slate-500">(${(bias >= 0 ? '+' : '') + bias.toFixed(1)}s)</span>
@@ -5753,14 +6054,14 @@ function tabRD() {
 
                     <div class="space-y-4">
           ${RD_PACKAGES.map(p => {
-        const cf = Math.round(rdEffectiveFail('cons', t2.car, t2.rdSkill, p.id, simCharges) * 100);
-        const bf = Math.round(rdEffectiveFail('bal',  t2.car, t2.rdSkill, p.id, simCharges) * 100);
-        const af = Math.round(rdEffectiveFail('agg',  t2.car, t2.rdSkill, p.id, simCharges) * 100);
+             const cf = Math.round(rdEffectiveFail('cons', t2.car, t2.rdSkill, p.id, simCharges, t2) * 100);
+        const bf = Math.round(rdEffectiveFail('bal',  t2.car, t2.rdSkill, p.id, simCharges, t2) * 100);
+        const af = Math.round(rdEffectiveFail('agg',  t2.car, t2.rdSkill, p.id, simCharges, t2) * 100);
         /* v24: guadagno atteso per strategia, con moltiplicatore di ruolo */
         const gainMult = rdRoleGainMult();
-        const gC = rdEffectiveGain('cons', t2.car, t2.rdSkill, p.id);
-        const gB = rdEffectiveGain('bal',  t2.car, t2.rdSkill, p.id);
-        const gA = rdEffectiveGain('agg',  t2.car, t2.rdSkill, p.id);
+        const gC = rdEffectiveGain('cons', t2.car, t2.rdSkill, p.id, t2);
+        const gB = rdEffectiveGain('bal',  t2.car, t2.rdSkill, p.id, t2);
+        const gA = rdEffectiveGain('agg',  t2.car, t2.rdSkill, p.id, t2);
         const fmt = g => round1(g.min * gainMult) + '~' + round1(g.max * gainMult);
         const descParams = { n: SIM_BUFF_CHARGES };
         const stratRow = (stratId, cost, risk, riskCls, gain) => `
@@ -6072,7 +6373,7 @@ function chooseSetup(id) {
   S.weather = (S.forecast && S.forecast.hidden) || drawWeatherFromForecast(S.forecast);
   if (S.forecast) S.forecast.hidden = null;
   S.asphaltTemp = applyWeatherToAsphalt(S.asphaltTemp, S.weather.name);  // ← correzione QUI
-   S.setupBonus = setupBonusFor(id, r.type, S.weather.name);
+S.setupBonus = setupBonusFor(id, r.type, S.weather.name) + facilitySetupBonus(playerTeam());
   S.setupId = id;
   S.setupLabel = s.name;
   save();
@@ -6218,7 +6519,13 @@ function startQualifying(opts = {}) {
   S.screen = 'quali';
   save(); render();
 }
-
+// v32: rendimento decrescente della speed oltre 90 in qualifica
+// speed 90 → 90; speed 95 → 91.5; speed 99 → 92.7
+function qualiSpeedContribution(speed) {
+  if (!Number.isFinite(speed)) return 50;
+  if (speed <= 90) return speed;
+  return 90 + (speed - 90) * 0.30;
+}
 function simulateQualiTimes(participantIds, sessionNum) {
   const cfg = QUALI_SESSIONS[sessionNum];
   const circuit = CALENDAR[S.round];
@@ -6229,17 +6536,19 @@ function simulateQualiTimes(participantIds, sessionNum) {
     const d = driverById(id);
     let sc = basePace(d);
 
-    if (d.isPlayer) {
-      sc += (d.speed - 50) * SIM_TUNING.qualiPlayerSpeedBoost;
-      const negScale = clamp(
-        1 - (d.consistency - 50) * SIM_TUNING.qualiNegScaleConsistency * cfg.consMult,
-        SIM_TUNING.qualiNegScaleMin,
-        SIM_TUNING.qualiNegScaleMax
-      );
-      let q = rnd(-cfg.noise, cfg.noise);
-      if (q < 0) q *= negScale;
-      sc += q * (1 + (S.weather.chaos - 1) * SIM_TUNING.qualiWeatherChaosScale);
-    } else {
+   if (d.isPlayer) {
+  // v32: la speed oltre 90 ha rendimento decrescente in qualifica
+  const effSpeed = qualiSpeedContribution(d.speed);
+  sc += (effSpeed - 50) * SIM_TUNING.qualiPlayerSpeedBoost;
+  const negScale = clamp(
+    1 - (d.consistency - 50) * SIM_TUNING.qualiNegScaleConsistency * cfg.consMult,
+    SIM_TUNING.qualiNegScaleMin,
+    SIM_TUNING.qualiNegScaleMax
+  );
+  let q = rnd(-cfg.noise, cfg.noise);
+  if (q < 0) q *= negScale;
+  sc += q * (1 + (S.weather.chaos - 1) * SIM_TUNING.qualiWeatherChaosScale);
+} else {
       sc += rnd(-cfg.noise, cfg.noise) * (1 + (S.weather.chaos - 1) * SIM_TUNING.qualiWeatherChaosScale);
     }
     return { id, sc };
@@ -6800,9 +7109,9 @@ function viewStrategy() {
       🛞 Pit loss: <b class="text-slate-200">${r.pitLoss[0].toFixed(1)}–${r.pitLoss[1].toFixed(1)}s</b>
     </div>` : ''}
 	${(() => {
-  const team = playerTeam();
+   const team = playerTeam();
   const rate = pitCrewRating(team);
-  const bias = team.pitCrewBias || 0;
+  const bias = (team.pitCrewBias || 0) + facilityPitBiasDelta(team);    // v32
   const biasTxt = (bias >= 0 ? '+' : '') + bias.toFixed(1);
   return `
   <div class="text-[11px] text-slate-400 mt-0.5">
@@ -7016,15 +7325,17 @@ function advancePUWear(race) {
   const temp = Number.isFinite(S.asphaltTemp) ? S.asphaltTemp : REF_ASPHALT_TEMP;
   const mult = puCircuitFactor(race, temp);
 
-  S.drivers.forEach(d => {
-    const pu = S.powerUnits[d.id] || (S.powerUnits[d.id] = { used: 1, wear: 0 });
-    const variance = d.isPlayer ? 1 : rnd(0.90, 1.10);
-    pu.wear += PU_BASE_WEAR * mult * variance;
-    if (pu.wear >= PU_WEAR_RESET_AT) {
-      pu.used += 1;
-      pu.wear = pu.wear - PU_WEAR_RESET_AT;
-    }
-  });
+S.drivers.forEach(d => {
+  const pu = S.powerUnits[d.id] || (S.powerUnits[d.id] = { used: 1, wear: 0 });
+  const variance = d.isPlayer ? 1 : rnd(0.90, 1.10);
+  const team = teamById(d.teamId);
+  const facMult = team ? facilityPUWearMult(team) : 1;      // v32
+  pu.wear += PU_BASE_WEAR * mult * variance * facMult;
+  if (pu.wear >= PU_WEAR_RESET_AT) {
+    pu.used += 1;
+    pu.wear = pu.wear - PU_WEAR_RESET_AT;
+  }
+});
 }
 
 /* Calcola le posizioni di penalty per ogni pilota */
@@ -7167,7 +7478,13 @@ function evaluatePitMove(L, choice) {
   const gapSec = (ahead.sc - me.sc) * SIM_TUNING.gapFactor;
 
   /* Pit loss del mio team in sc (con crew bias) */
-const { sc: myPitSc } = computePitLossSc(team, circuit, {});
+  /* Pit loss stimato in modo deterministico (stesso valore mostrato = applicato) */
+  const pitRange = (circuit && Array.isArray(circuit.pitLoss))
+    ? circuit.pitLoss : [PIT_TIME_LOSS_MIN, PIT_TIME_LOSS_MAX];
+  const pitLossMid  = (pitRange[0] + pitRange[1]) / 2;
+  const biasBase    = (team && Number.isFinite(team.pitCrewBias)) ? team.pitCrewBias : 0;
+  const biasDelta   = team ? facilityPitBiasDelta(team) : 0;
+  const myPitSc     = (pitLossMid + biasBase + biasDelta) / SIM_TUNING.gapFactor;
 
   /* Differenza di wear: quanto il rivale è più consumato di me */
   const wearDelta = ahead.wear - me.wear;
@@ -7387,15 +7704,18 @@ function computePitLossSc(team, circuit, context = {}) {
     || { wEntry: PIT_ENTRY_WEIGHT_DEFAULT, wBase: PIT_BASE_WEIGHT_DEFAULT, wExit: PIT_EXIT_WEIGHT_DEFAULT };
   const wSum = (weights.wEntry + weights.wBase + weights.wExit) || 1;
 
-  const bias  = (team && Number.isFinite(team.pitCrewBias))  ? team.pitCrewBias  : 0;
-  const sigma = (team && Number.isFinite(team.pitCrewSigma)) ? team.pitCrewSigma : 0.35;
+  const biasBase  = (team && Number.isFinite(team.pitCrewBias)) ? team.pitCrewBias : 0;
+  const biasDelta = team ? facilityPitBiasDelta(team) : 0;                 // v32
+  const bias      = biasBase + biasDelta;
+  const sigma     = (team && Number.isFinite(team.pitCrewSigma)) ? team.pitCrewSigma : 0.35;
   const crewDelta = bias + rnd(-sigma, sigma);
 
   const entry = Math.max(0.5, target * weights.wEntry * rnd(0.92, 1.08) + crewDelta * (weights.wEntry / wSum));
   const exit  = Math.max(0.5, target * weights.wExit  * rnd(0.92, 1.08) + crewDelta * (weights.wExit  / wSum));
   const stop  = Math.max(1.8, target * weights.wBase                       + crewDelta * (weights.wBase  / wSum));
 
-  const fumbled = rng() < PIT_FUMBLE_CHANCE;
+    const fumbleChance = team ? facilityFumbleChance(team) : PIT_FUMBLE_CHANCE;   // v32
+  const fumbled = rng() < fumbleChance;
   const fumblePenalty = fumbled ? rnd(PIT_FUMBLE_MIN, PIT_FUMBLE_MAX) : 0;
 
   const traffic = trafficAhead ? rnd(0.5, PIT_TRAFFIC_MAX) : 0;
@@ -7413,8 +7733,8 @@ function computePitLossSc(team, circuit, context = {}) {
 
 /* v28: rating leggibile per UI */
 function pitCrewRating(team) {
-  if (!team) return { label: '—', cls: 'text-slate-400' };
-  const b = team.pitCrewBias || 0;
+ if (!team) return { label: '—', cls: 'text-slate-400' };
+  const b = (team.pitCrewBias || 0) + facilityPitBiasDelta(team);
   if (b <= -0.5) return { label: t('pitcrew.elite'),  cls: 'text-gold' };
   if (b <= -0.2) return { label: t('pitcrew.fast'),   cls: 'text-emerald-400' };
   if (b <=  0.2) return { label: t('pitcrew.avg'),    cls: 'text-slate-300' };
@@ -7469,8 +7789,9 @@ let wearDelta = mode.wear * wearMultFor(d) * cEff.wearMult * (r.tempWearMult || 
 
      /* v31 Step 4: accumula danno e calcola DNF in base al danno cumulato */
       /* v31 Step 4: accumula danno e calcola DNF in base al danno cumulato */
-    const carNow = teamById(r.teamId).car;
-    const dmg = computeDamagePerTick(r, mode.id, carNow, st.weight, halfIndex);
+  const carNow  = teamById(r.teamId).car;
+const teamRow = teamById(r.teamId);
+const dmg = computeDamagePerTick(r, mode.id, carNow, st.weight, halfIndex, teamRow);
     r.danno = clamp(r.danno + dmg, 0, 100);
 
     /* v34 fix: il danno ora rallenta la macchina oltre a innalzare il rischio DNF.
@@ -7775,6 +8096,7 @@ function applyWeatherChange(L, choice) {
       r.sc -= pitLossSc + WEATHER_PIT_COST;
       r.wear = Math.max(0, r.wear * PIT_WEAR_RESET);
       r.pitStops = (r.pitStops || 0) + 1;
+	    r.scPitStint = L.stint;
       r.stintCompounds[L.stint] = targetCompound;
 
       const ambientPit = Number.isFinite(S.asphaltTemp) ? S.asphaltTemp : REF_ASPHALT_TEMP;
@@ -8160,12 +8482,11 @@ function viewRaceLive() {
         <div class="text-[12px] text-slate-400">${esc(t('live.weather_stay_desc'))}</div>
       </button>
     </div>`;
-     } else if (L.pending === 'pit') {
+ } else if (L.pending === 'pit') {
     const stPit = getRaceStints()[L.stint];
     const lap = Math.round(stPit.lapFrom + (stPit.lapTo - stPit.lapFrom) * STINT_SPLIT);
 
     /* v26: stime preventive per la UI */
-      /* v26: stime preventive per la UI */
     const pitEval  = evaluatePitMove(L, 'pit');
     const stayEval = evaluatePitMove(L, 'stay');
     const fmt = r => {
@@ -8520,8 +8841,9 @@ async function _runQuickSeason(totalRaces) {
   S.asphaltTemp = rollAsphaltTemp();
   S.asphaltTemp = applyWeatherToAsphalt(S.asphaltTemp, S.weather.name);
 
-   const autoId = pickAutoSetupId(circuit, S.weather);
-  S.setupBonus = setupBonusFor(autoId, circuit.type, S.weather.name);
+    const autoId = pickAutoSetupId(circuit, S.weather);
+  S.setupBonus = setupBonusFor(autoId, circuit.type, S.weather.name)
+               + facilitySetupBonus(playerTeam());                       // v32
   S.setupId = autoId;
   S.setupLabel = SETUPS.find(s => s.id === autoId).name;
 
@@ -11180,6 +11502,28 @@ function _dispatchAction(name, dataset, el, event) {
 }
 
 const ACTIONS = {
+'facility-upgrade': (d) => {
+  const team = playerTeam();
+  const fac = d.facId;
+  if (!FACILITY_IDS.includes(fac)) return;
+  const cost = nextFacilityUpgradeCost(team, fac);
+  const lv = facilityLevel(team, fac);
+  const facName = t('fac.' + fac + '.name');
+
+  if (cost == null) { toast(t('hq.already_max'), 'bad'); return; }
+  if (S.budget < cost) { toast(t('toast.rd_budget', { n: cost }), 'bad'); return; }
+
+  askConfirm(
+    t('hq.upgrade_confirm', { name: facName, lv: lv + 1, cost }),
+    () => {
+      S.budget -= cost;
+      team.facilities[fac] = lv + 1;
+      save(); render();
+      toast(t('hq.upgrade_done', { name: facName, lv: team.facilities[fac] }), 'good');
+    },
+    { yes: t('hq.upgrade_yes') }
+  );
+},
   'menu-back': () => { S = null; render(); },
   'slot-continue': (d) => { CURRENT_SLOT = +d.slot; continueCareer(); },
   'slot-new':      (d) => openCreate(+d.slot),
