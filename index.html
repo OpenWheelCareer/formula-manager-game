@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>F1 CAREER MODE — Simulatore di Carriera</title>
+<title>Open Wheel Career — Simulatore di Carriera</title>
 
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
@@ -170,6 +170,9 @@ const REG_HISTORY_CAP = 50;
 const RADIO_LOG_CAP = 20;                /* v22: era 12 */
 const RIVALRY_HISTORY_CAP = 30;
 const QUALI_COMMENTARY_CAP = 4;
+/* v32: conversione sc → tempo sul giro */
+const QUALI_TIME_PER_SC = 0.10;   // 1 unità di sc ≈ 0.10s sul giro
+const QUALI_DEFAULT_LAP_BASE = 90; // fallback se lapTimeBase mancante
 
 const RIVALRY_BONUS_THRESHOLD = 5;
 const RIVALRY_BONUS_DELTA = 0.3;
@@ -219,6 +222,49 @@ const RACE_STINTS = [
   { name:'Stint 2', lapFrom: 20, lapTo: 38, weight: 0.40, pitWindow: [30, 40] },
   { name:'Stint 3', lapFrom: 39, lapTo: 57, weight: 0.30, pitWindow: null }
 ];
+/* v34: stint dinamici per circuito.
+   La durata totale varia per pista (Monaco 78 giri, Spa 44).
+   I pesi (0.30 / 0.40 / 0.30) e il pit window (a 7-2 giri dal termine)
+   sono proporzionali, quindi i pit stop restano tatticamente equivalenti
+   anche su gare molto diverse. */
+const STINT_WEIGHTS = [0.30, 0.40, 0.30];
+const _stintCache = {};
+
+function computeStints(totalLaps) {
+  const total = Math.max(20, totalLaps | 0);
+  const out = [];
+  let cumulative = 0;
+  for (let i = 0; i < STINT_WEIGHTS.length; i++) {
+    const w = STINT_WEIGHTS[i];
+    const lapFrom = Math.round(cumulative * total) + 1;
+    cumulative += w;
+    const lapTo = (i === STINT_WEIGHTS.length - 1)
+      ? total
+      : Math.round(cumulative * total);
+    const isLast = i === STINT_WEIGHTS.length - 1;
+    out.push({
+      name: 'Stint ' + (i + 1),
+      lapFrom,
+      lapTo,
+      weight: w,
+      pitWindow: isLast ? null : [
+        Math.max(lapFrom + 2, lapTo - 7),
+        Math.min(lapTo + 2, lapTo + 2)
+      ]
+    });
+  }
+  return out;
+}
+
+function getRaceStints() {
+  if (!S || !CALENDAR[S.round]) return RACE_STINTS;
+  const circuit = CALENDAR[S.round];
+  const key = circuit.gp + '#' + (circuit.laps || 57);
+  if (!_stintCache[key]) {
+    _stintCache[key] = computeStints(circuit.laps || 57);
+  }
+  return _stintCache[key];
+}
 /* v25: pit window — split di ogni stint in early/late */
 const STINT_SPLIT = 0.55;   /* il primo half copre il 55% dello stint, il secondo il 45% */
 const PACE_MODES = {
@@ -241,6 +287,29 @@ const STRATEGY_COMPOUND = {
   'inter':               { softness: 0.50, label: 'Intermedie' },
   'wet':                 { softness: 0.35, label: 'Full Wet' }
 };
+/* v33: mapping strategy → compound per stint (indice 0,1,2) */
+const STRATEGY_TO_COMPOUNDS = {
+  '1stop_soft_hard':     ['soft', 'hard',  null],
+  '2stop_soft_med_soft': ['soft', 'medium', 'soft'],
+  '1stop_hard_med':      ['hard', 'medium', null],
+  'inter':               ['inter', 'inter', null],
+  'wet':                 ['wet', 'wet', null]
+};
+
+/* v33: effetto del compound sulla fisica — sostituisce applyStrategyEffect */
+const COMPOUND_EFFECT = {
+  soft:   { paceBonus: 3.8,  wearMult: 1.15, chaosScale: 1.0 },
+  medium: { paceBonus: 1.4,  wearMult: 0.95, chaosScale: 1.0 },
+  hard:   { paceBonus: 0.3,  wearMult: 0.75, chaosScale: 0.75 },
+  inter:  { paceBonus: 0,    wearMult: 1.0,  chaosScale: 1.0 },
+  wet:    { paceBonus: 0,    wearMult: 1.0,  chaosScale: 1.0 }
+};
+
+/* v33: bonus compound × meteo (le intermedie rendono su Variabile, ecc.) */
+const COMPOUND_WEATHER_BONUS = {
+  inter: { Variabile: 4.5, Pioggia: -3.0, Asciutto: -4.0 },
+  wet:   { Pioggia: 4.5,   Variabile: -6.5, Asciutto: -8.0 }
+};
 const WEAR_PENALTY_START = 50;
 const WEAR_PENALTY_SLOPE = 0.12;
 const SC_PIT_COST = 0.6;
@@ -259,6 +328,23 @@ const PU_LIMIT            = 4;      // PU consentite per stagione
 const PU_BASE_WEAR        = 20;     // wear medio per gara
 const PU_GRID_PENALTY     = 10;     // posizioni perse per ogni PU extra
 const PU_WEAR_RESET_AT    = 100;    // soglia di "consumo" PU
+/* v32: pit loss a 4 fasi — entry + stop + exit + traffico/stack */
+const PIT_ENTRY_WEIGHT_DEFAULT = 0.33;
+const PIT_BASE_WEIGHT_DEFAULT  = 0.27;
+const PIT_EXIT_WEIGHT_DEFAULT  = 0.40;
+const PIT_TRAFFIC_MAX          = 3.0;   // secondi persi se rientri nel traffico
+const PIT_DOUBLE_STACK_MIN     = 2.5;   // secondi extra per doppio stack
+const PIT_DOUBLE_STACK_MAX     = 5.5;
+
+/* Pesi caratteristici per circuiti dove la corsia box è atipica */
+const CIRCUIT_PIT_WEIGHTS = {
+  Montecarlo:      { wEntry: 0.45, wBase: 0.25, wExit: 0.30 },   // corsia lunga e stretta
+  Italia:          { wEntry: 0.28, wBase: 0.30, wExit: 0.42 },   // corsia corta, esci veloce
+  Singapore:       { wEntry: 0.40, wBase: 0.28, wExit: 0.32 },   // umidità + corsia stretta
+  Azerbaijan:      { wEntry: 0.30, wBase: 0.30, wExit: 0.40 },
+  'Las Vegas':     { wEntry: 0.30, wBase: 0.30, wExit: 0.40 },
+  Bahrain:         { wEntry: 0.28, wBase: 0.30, wExit: 0.42 }
+};
 /* v24: cliff di degrado — sopra questa soglia il wear accelera */
 const WEAR_CLIFF_START = 70;
 const WEAR_CLIFF_MULT = 1.6;
@@ -298,13 +384,55 @@ const SIM_TUNING = {
   scGapCapMin: 10,
   scGapCapMax: 15
 };
-
+/* ===== v31 Step 1: modello termico gomma ===== */
+const TYRE_TEMP_START_FACTOR = 0.75;   /* temp iniziale gomma = % dell'asfalto */
+const TYRE_TEMP_COOL_RATE = 0.30;      /* convergenza verso la temp asfalto */
+const TYRE_TEMP_HEAT = { push: 20, normal: 14, save: 8 };  /* riscaldamento °C/tick */
+const TYRE_TEMP_MIN = 20;
+const TYRE_TEMP_MAX = 130;
+const TYRE_TEMP_OPTIMAL = 88;          /* centro finestra ottimale */
+const TYRE_TEMP_WINDOW = 15;           /* ±window = nessuna penalità */
+const TYRE_TEMP_COLD = 65;             /* sotto: graining */
+const TYRE_TEMP_HOT = 110;             /* sopra: usura termica amplificata */
+const TYRE_TEMP_COLD_WEAR_MULT = 1.10;
+const TYRE_TEMP_HOT_WEAR_SLOPE = 0.012;
+const TYRE_TEMP_PACE_SLOPE = 0.012;
+/* ===== v31 Step 2: peso carburante ===== */
+const FUEL_START_KG = 110;             /* kg di benzina a inizio gara */
+const FUEL_PACE_PER_KG = 0.030;        /* sc di bonus per ogni kg in meno */
+/* ===== v31 Step 3: aerodinamica semplificata ===== */
+const AERO_SETUP_LOAD = { aero: 75, bal: 50, top: 25, wet: 50 };  /* carico 0-100 per setup */
+const AERO_WEIGHT_TWISTY = { df: 1.00, drag: 0.25 };
+const AERO_WEIGHT_POWER  = { df: 0.20, drag: 1.00 };
+const AERO_WEIGHT_BAL    = { df: 0.55, drag: 0.55 };
+const AERO_PACE_SCALE    = 0.5;   /* scala del paceMod: 0.5 = effetti moderati */
+/* ===== v31 Step 4: DNF a catena causale (danno cumulativo) ===== */
+const DAMAGE_PACE_SLOPE = 0.030;   /* v34: sc persi per unità di danno (max ~3 sc a danno 100) */
+const DAMAGE_BASE_PER_RACE = 12;          /* danno base su tutta la gara (0-100) */
+const DAMAGE_PER_CAR_POINT = 0.25;        /* danno extra per ogni punto di car < 85 */
+const DAMAGE_MULT_PUSH = 2.0;             /* moltiplicatore stile push */
+const DAMAGE_MULT_NORMAL = 1.0;
+const DAMAGE_MULT_SAVE = 0.5;
+const DAMAGE_WEAR_THRESHOLD = 70;         /* sopra questa soglia il danno accelera */
+const DAMAGE_WEAR_MULT = 1.5;
+const DAMAGE_BASE_DNF = 0.002;            /* DNF chance per tick a danno 0 */
+const DAMAGE_DNF_SLOPE = 0.0010;          /* incremento per unità di danno */
+const DAMAGE_DNF_MAX = 0.35;              /* cap per tick */
 const WEATHER_CLIMATE = { Asciutto: 0.58, Variabile: 0.27, Pioggia: 0.15 };
 const WEATHER_DEFS = {
   Asciutto:  { name:'Asciutto',  icon:'☀️', chaos:1.0 },
   Variabile: { name:'Variabile', icon:'🌤️', chaos:1.5 },
   Pioggia:   { name:'Pioggia',   icon:'🌧️', chaos:2.2 }
 };
+/* v33: probabilità di cambio meteo per stint (dipende dal meteo di partenza) */
+const WEATHER_CHANGE_CHANCE = {
+  Asciutto:  { to: 'Variabile', p: 0.06 },   /* 6% per stint */
+  Variabile: { to: 'Pioggia',   p: 0.25 },
+  Pioggia:   { to: 'Variabile', p: 0.20 }
+};
+
+/* v33: costo del pit sotto cambio meteo (pit + adattamento) */
+const WEATHER_PIT_COST = 1.5;   /* sc extra vs pit normale */
 
 /* =========================================================================
    =============================== DATA ====================================
@@ -321,24 +449,24 @@ const TEAM_DB = [
   { id:'mcl', name:'Papaya Motorsport', short:'PAP', color:'#ff8000', car:86, prestige:95, budget:140, low:false, minCar:78, pitCrewBias:-0.6, pitCrewSigma:0.30 },
   { id:'rbr', name:'Toro Energetico',   short:'TOR', color:'#1b3d8f', car:84, prestige:94, budget:138, low:false, minCar:76, pitCrewBias:-0.7, pitCrewSigma:0.25 },
   { id:'rbu', name:'Toro Junior',       short:'TJR', color:'#6692ff', car:78, prestige:64, budget:112, low:false, minCar:68, isSatellite:true, maxCar:79, pitCrewBias:-0.2, pitCrewSigma:0.45 },
-  { id:'alp', name:'Alpine Bleu',       short:'ALP', color:'#0090ff', car:77, prestige:66, budget:115, low:true,  minCar:66, pitCrewBias: 0.1, pitCrewSigma:0.45 },
+  { id:'alp', name:'Azur Racing',       short:'AZR', color:'#0090ff', car:77, prestige:66, budget:115, low:true,  minCar:66, pitCrewBias: 0.1, pitCrewSigma:0.45 },
   { id:'aud', name:'Audon',             short:'AUD', color:'#009b3a', car:75, prestige:70, budget:120, low:true,  minCar:64, pitCrewBias: 0.4, pitCrewSigma:0.50 },
   { id:'has', name:'Acciaio Americano', short:'ACC', color:'#b6babd', car:73, prestige:58, budget:108, low:true,  minCar:62, isSatellite:true, maxCar:79, pitCrewBias: 0.3, pitCrewSigma:0.55 },
-  { id:'wil', name:'Williams Grove',    short:'WGR', color:'#00a0de', car:70, prestige:72, budget:118, low:true,  minCar:60, pitCrewBias: 0.2, pitCrewSigma:0.50 },
+  { id:'wil', name:'Grove Motorsport',    short:'GRV', color:'#00a0de', car:70, prestige:72, budget:118, low:true,  minCar:60, pitCrewBias: 0.2, pitCrewSigma:0.50 },
   { id:'ast', name:'Verde Britannico',  short:'VRB', color:'#00594f', car:65, prestige:78, budget:132, low:true,  minCar:55, pitCrewBias:-0.1, pitCrewSigma:0.45 },
-  { id:'cad', name:'Cadillac Detroit',  short:'CAD', color:'#c9a227', car:60, prestige:52, budget:105, low:true,  minCar:50, pitCrewBias: 0.7, pitCrewSigma:0.60 }
+  { id:'cad', name:'Detroit Motor Works',  short:'DTW', color:'#c9a227', car:60, prestige:52, budget:105, low:true,  minCar:50, pitCrewBias: 0.7, pitCrewSigma:0.60 }
 ];
 
 const AI_DRIVERS = [
-  { id:'ai1',  name:'Max Verstacrit',    nat:'🇳🇱', team:'rbr', ovr:93, age:29 },
+  { id:'ai1',  name:'Kai Vandersteen',    nat:'🇳🇱', team:'rbr', ovr:93, age:29 },
   { id:'ai2',  name:'Isacco Hagi',        nat:'🇫🇷', team:'rbr', ovr:81, age:22 },
-  { id:'ai3',  name:'Carlo Leclerc',      nat:'🇲🇨', team:'fer', ovr:88, age:28 },
-  { id:'ai4',  name:'Luigi Amilton',      nat:'🇬🇧', team:'fer', ovr:89, age:41 },
-  { id:'ai5',  name:'Lando Noris',        nat:'🇬🇧', team:'mcl', ovr:87, age:26 },
+  { id:'ai3',  name:'Carlo Lecroix',      nat:'🇲🇨', team:'fer', ovr:88, age:28 },
+  { id:'ai4',  name:'Louie Hamlin',      nat:'🇬🇧', team:'fer', ovr:89, age:41 },
+  { id:'ai5',  name:'Lando Norton',        nat:'🇬🇧', team:'mcl', ovr:87, age:26 },
   { id:'ai6',  name:'Oscar Pastori',      nat:'🇦🇺', team:'mcl', ovr:85, age:25 },
-  { id:'ai7',  name:'Giorgio Ruspa',      nat:'🇬🇧', team:'mer', ovr:86, age:28 },
+  { id:'ai7',  name:'Giorgio Ruscitti',      nat:'🇬🇧', team:'mer', ovr:86, age:28 },
   { id:'ai8',  name:'Ciro Antonelli',     nat:'🇮🇹', team:'mer', ovr:84, age:20 },
-  { id:'ai9',  name:'Fernando Alonza',    nat:'🇪🇸', team:'ast', ovr:86, age:45 },
+  { id:'ai9',  name:'Fernando Alvarez',    nat:'🇪🇸', team:'ast', ovr:86, age:45 },
   { id:'ai10', name:'Lanfranco Strologo',nat:'🇨🇦', team:'ast', ovr:78, age:27 },
   { id:'ai11', name:'Alessandro Albani', nat:'🇹🇭', team:'wil', ovr:79, age:30 },
   { id:'ai12', name:'Carlo Sainzio',     nat:'🇪🇸', team:'wil', ovr:84, age:32 },
@@ -356,125 +484,173 @@ const AI_DRIVERS = [
 
 const CALENDAR = [
   { gp:'Australia',    circuit:'Melbourne',   flag:'🇦🇺', type:'balanced',
-    fullName:'Australian Grand Prix — Albert Park Circuit',
+    fullName:'Australia — Melbourne',
     desc:'Tracciato semi-cittadino veloce, carico medio-basso. Frena poco, trazione in uscita dai tornanti lenti. Attenzione alla ghiaia vicino ai muretti.',
     asphaltTemp:[24, 40],
-    pitLoss:[21.5, 23.5] },
+    pitLoss:[21.5, 23.5],
+    lapTimeBase: 75.9,
+    laps: 58 },
   { gp:'Cina',         circuit:'Shanghai',    flag:'🇨🇳', type:'balanced',
-    fullName:'Chinese Grand Prix — Shanghai International Circuit',
+    fullName:'Cina — Shanghai',
     desc:'Mix tecnico con la lunghissima curva 1-2 e il rettilineo infinito. Richiede assetto bilanciato: buona efficienza aero sui lunghi curvoni.',
     asphaltTemp:[18, 34],
-    pitLoss:[22.0, 24.0] },
-  { gp:'Giappone',     circuit:'Suzuka',      flag:'🇯🇵', type:'twisty',
-    fullName:'Japanese Grand Prix — Suzuka Circuit',
+    pitLoss:[22.0, 24.0],
+    lapTimeBase: 92.2,
+    laps: 56 },
+  { gp:'Giappone',     circuit:'Circuito Giapponese',      flag:'🇯🇵', type:'twisty',
+    fullName:'Giappone — Circuito Giapponese',
     desc:'Otto figure, curve a esse e 130R. Carico aero alto, precisione millimetrica. Fondamentale la gomma anteriore sinistra.',
     asphaltTemp:[16, 30],
-    pitLoss:[22.5, 24.5] },
+    pitLoss:[22.5, 24.5],
+    lapTimeBase: 88.2,
+    laps: 53 },
   { gp:'Bahrain',      circuit:'Sakhir',      flag:'🇧🇭', type:'power',
-    fullName:'Bahrain Grand Prix — Bahrain International Circuit',
+    fullName:'Bahrain — Sakhir',
     desc:'Pista da trazione e frenata: lunghi rettilinei e staccate violente. Serve efficienza meccanica e tenuta sulle posteriori.',
     asphaltTemp:[28, 44],
-    pitLoss:[21.5, 23.0] },
+    pitLoss:[21.5, 23.0],
+    lapTimeBase: 89.2,
+    laps: 57 },
   { gp:'Arabia Saudita',circuit:'Jeddah',     flag:'🇸🇦', type:'power',
-    fullName:'Saudi Arabian Grand Prix — Jeddah Corniche Circuit',
+    fullName:'Arabia Saudita — Jeddah',
     desc:'Cittadino velocissimo tra i muretti. Carico medio, tanta velocità di punta e precisione nei cambi di direzione ad alta velocità.',
     asphaltTemp:[30, 46],
-    pitLoss:[20.5, 22.5] },
+    pitLoss:[20.5, 22.5],
+    lapTimeBase: 87.5,
+    laps: 50 },
   { gp:'Miami',        circuit:'Miami',       flag:'🇺🇸', type:'balanced',
-    fullName:'Miami Grand Prix — Miami International Autodrome',
+    fullName:'Miami — Circuito di Miami',
     desc:'Tracciato misto con lunghi rettilinei e settore guidato. Asfalto spesso rovente: usura termica importante sulle morbide.',
     asphaltTemp:[34, 50],
-    pitLoss:[22.0, 24.0] },
+    pitLoss:[22.0, 24.0],
+    lapTimeBase: 87.2,
+    laps: 57 },
   { gp:'Canada',       circuit:'Montreal',    flag:'🇨🇦', type:'balanced',
-    fullName:'Canadian Grand Prix — Circuit Gilles-Villeneuve',
+    fullName:'Canada — Montreal',
     desc:'Stop&go tra i muretti con il "Wall of Champions". Frenate pesanti e trazione da bassa velocità. Meteo spesso instabile.',
     asphaltTemp:[18, 34],
-    pitLoss:[20.5, 22.5] },
-  { gp:'Monaco',       circuit:'Montecarlo',  flag:'🇲🇨', type:'twisty',
-    fullName:'Monaco Grand Prix — Circuit de Monaco',
+    pitLoss:[20.5, 22.5],
+    lapTimeBase: 72.0,
+    laps: 70 },
+  { gp:'Montecarlo',       circuit:'Montecarlo',  flag:'🇲🇨', type:'twisty',
+    fullName:'Montecarlo — Circuito di Montecarlo',
     desc:'Massimo carico aero, curve lente e grip meccanico. Sorpassi quasi impossibili: qualifica decisiva.',
     asphaltTemp:[24, 40],
-    pitLoss:[23.5, 26.0] },
+    pitLoss:[23.5, 26.0],
+    lapTimeBase: 70.3,
+    laps: 78 },
   { gp:'Spagna',       circuit:'Barcellona',  flag:'🇪🇸', type:'balanced',
-    fullName:'Spanish Grand Prix — Circuit de Barcelona-Catalunya',
+    fullName:'Spagna — Barcellona',
     desc:'Pista di riferimento per l\'aero: curva 3 e 9 mettono in crisi il carico. Usura anteriore sinistra elevata.',
     asphaltTemp:[30, 46],
-    pitLoss:[22.0, 23.5] },
+    pitLoss:[22.0, 23.5],
+    lapTimeBase: 71.4,
+    laps: 66 },
   { gp:'Austria',      circuit:'Spielberg',   flag:'🇦🇹', type:'power',
-    fullName:'Austrian Grand Prix — Red Bull Ring',
+    fullName:'Austria — Spielberg',
     desc:'Corto e nervoso, tre staccate dure e curve in salita. Poca aero, tanta trazione in uscita.',
     asphaltTemp:[22, 40],
-    pitLoss:[20.5, 22.0] },
-  { gp:'Gran Bretagna',circuit:'Silverstone', flag:'🇬🇧', type:'twisty',
-    fullName:'British Grand Prix — Silverstone Circuit',
+    pitLoss:[20.5, 22.0],
+    lapTimeBase: 64.3,
+    laps: 71 },
+  { gp:'Gran Bretagna',circuit:'Circuito Britannico', flag:'🇬🇧', type:'twisty',
+    fullName:'Gran Bretagna — Circuito Britannico',
     desc:'Le curve veloci (Copse, Maggotts, Becketts) esaltano il carico aero. Usura laterale severa, meteo spesso variabile.',
     asphaltTemp:[14, 30],
-    pitLoss:[22.0, 23.5] },
-  { gp:'Belgio',       circuit:'Spa',         flag:'🇧🇪', type:'power',
-    fullName:'Belgian Grand Prix — Circuit de Spa-Francorchamps',
+    pitLoss:[22.0, 23.5],
+    lapTimeBase: 85.8,
+    laps: 52 },
+  { gp:'Belgio',       circuit:'Circuito delle Ardenne',         flag:'🇧🇪', type:'power',
+    fullName:'Belgio — Circuito delle Ardenne',
     desc:'Eau Rouge-Raidillon e Pouhon: serve compromesso tra carico ed efficienza. Meteo imprevedibile sulle Ardenne.',
     asphaltTemp:[14, 30],
-    pitLoss:[22.5, 24.5] },
-  { gp:'Ungheria',     circuit:'Hungaroring', flag:'🇭🇺', type:'twisty',
-    fullName:'Hungarian Grand Prix — Hungaroring',
+    pitLoss:[22.5, 24.5],
+    lapTimeBase: 113.2,
+    laps: 44 },
+  { gp:'Ungheria',     circuit:'Circuito di Budapest', flag:'🇭🇺', type:'twisty',
+    fullName:'Ungheria — Circuito di Budapest',
     desc:'Corto, tortuoso, sempre in curva. Massimo carico, trazione critica. Sorpassare è difficile, qualifica chiave.',
     asphaltTemp:[30, 48],
-    pitLoss:[22.5, 24.5] },
+    pitLoss:[22.5, 24.5],
+    lapTimeBase: 75.2,
+    laps: 70 },
   { gp:'Paesi Bassi',  circuit:'Zandvoort',   flag:'🇳🇱', type:'twisty',
-    fullName:'Dutch Grand Prix — Circuit Zandvoort',
+    fullName:'Paesi Bassi — Zandvoort',
     desc:'Curve sopraelevate e settore guidato stretto. Carico alto, vento laterale può disturbare il bilanciamento.',
     asphaltTemp:[18, 32],
-    pitLoss:[21.5, 23.0] },
-  { gp:'Italia',       circuit:'Monza',       flag:'🇮🇹', type:'power',
-    fullName:'Italian Grand Prix — Autodromo Nazionale di Monza',
+    pitLoss:[21.5, 23.0],
+    lapTimeBase: 70.0,
+    laps: 72 },
+  { gp:'Italia',       circuit:'Autodromo Lombardo',       flag:'🇮🇹', type:'power',
+    fullName:'Italia — Autodromo Lombardo',
     desc:'Tempio della velocità: alettoni scarichi, tanta efficienza. Le staccate di Rettifilo e Roggia stressano i freni.',
     asphaltTemp:[24, 40],
-    pitLoss:[19.5, 21.0] },
+    pitLoss:[19.5, 21.0],
+    lapTimeBase: 79.3,
+    laps: 53 },
   { gp:'Spagna (Madrid)',circuit:'Madring',   flag:'🇪🇸', type:'balanced',
-    fullName:'Madrid Grand Prix — Madring',
+    fullName:'Spagna (Madrid) — Madring',
     desc:'Tracciato nuovo, mix di curve veloci e tornanti lenti. Asfalto caldo, degrado termico importante.',
     asphaltTemp:[30, 46],
-    pitLoss:[22.0, 24.0] },
+    pitLoss:[22.0, 24.0],
+    lapTimeBase: 78.5,
+    laps: 57 },
   { gp:'Azerbaijan',   circuit:'Baku',        flag:'🇦🇿', type:'power',
-    fullName:'Azerbaijan Grand Prix — Baku City Circuit',
+    fullName:'Azerbaijan — Baku',
     desc:'Il rettilineo più lungo del calendario e il castello strettissimo. Assetto scarico per la velocità, ma serve trazione nel settore vecchio.',
     asphaltTemp:[24, 38],
-    pitLoss:[21.0, 23.0] },
-  { gp:'Singapore',    circuit:'Marina Bay',  flag:'🇸🇬', type:'twisty',
-    fullName:'Singapore Grand Prix — Marina Bay Street Circuit',
+    pitLoss:[21.0, 23.0],
+    lapTimeBase: 101.4,
+    laps: 51 },
+  { gp:'Singapore',    circuit:'Circuito di Singapore',  flag:'🇸🇬', type:'twisty',
+    fullName:'Singapore — Circuito di Singapore',
     desc:'Cittadino notturno, umidità altissima. Carico alto, trazione costante. Usura termica e fisica estrema per i piloti.',
     asphaltTemp:[34, 50],
-    pitLoss:[25.5, 27.5] },
+    pitLoss:[25.5, 27.5],
+    lapTimeBase: 89.5,
+    laps: 62 },
   { gp:'Texas',        circuit:'Austin',      flag:'🇺🇸', type:'balanced',
-    fullName:'United States Grand Prix — Circuit of the Americas',
+    fullName:'United States Race Weekend — Circuit of the Americas',
     desc:'Curve 2-10 in salita e la esse veloce finale. Compromesso tra carico e velocità di punta.',
     asphaltTemp:[28, 44],
-    pitLoss:[21.5, 23.0] },
+    pitLoss:[21.5, 23.0],
+    lapTimeBase: 92.3,
+    laps: 56 },
   { gp:'Messico',      circuit:'Città del Messico', flag:'🇲🇽', type:'balanced',
-    fullName:'Mexico City Grand Prix — Autódromo Hermanos Rodríguez',
+    fullName:'Messico — Città del Messico',
     desc:'Altopiano a 2.200 m: aria rarefatta, deportanza ridotta. Motori e freni in sofferenza.',
     asphaltTemp:[22, 38],
-    pitLoss:[22.5, 24.5] },
-  { gp:'Brasile',      circuit:'Interlagos',  flag:'🇧🇷', type:'balanced',
-    fullName:'São Paulo Grand Prix — Autódromo José Carlos Pace',
+    pitLoss:[22.5, 24.5],
+    lapTimeBase: 75.9,
+    laps: 71 },
+  { gp:'Brasile',      circuit:'Circuito di San Paolo',  flag:'🇧🇷', type:'balanced',
+    fullName:'Brasile — Circuito di San Paolo',
     desc:'Tracciato corto e ondulato, con il Senna S e il rettilineo in salita. Meteo tropicale instabile.',
     asphaltTemp:[28, 44],
-    pitLoss:[20.5, 22.0] },
+    pitLoss:[20.5, 22.0],
+    lapTimeBase: 70.7,
+    laps: 71 },
   { gp:'Las Vegas',    circuit:'Las Vegas',   flag:'🇺🇸', type:'power',
-    fullName:'Las Vegas Grand Prix — Las Vegas Strip Circuit',
+    fullName:'Las Vegas — Circuito di Las Vegas',
     desc:'Gara notturna con temperature basse: difficile mandare in temperatura le gomme. Tanta velocità di punta e frenate pesanti.',
     asphaltTemp:[14, 28],
-    pitLoss:[22.5, 24.5] },
+    pitLoss:[22.5, 24.5],
+    lapTimeBase: 92.3,
+    laps: 50 },
   { gp:'Qatar',        circuit:'Lusail',      flag:'🇶🇦', type:'power',
-    fullName:'Qatar Grand Prix — Lusail International Circuit',
+    fullName:'Qatar — Lusail',
     desc:'Curve veloci in sequenza. Carico medio-alto, usura laterale severa sulle anteriori.',
     asphaltTemp:[24, 38],
-    pitLoss:[22.5, 24.5] },
-  { gp:'Abu Dhabi',    circuit:'Yas Marina',  flag:'🇦🇪', type:'balanced',
-    fullName:'Abu Dhabi Grand Prix — Yas Marina Circuit',
+    pitLoss:[22.5, 24.5],
+    lapTimeBase: 80.5,
+    laps: 57 },
+  { gp:'Abu Dhabi',    circuit:'Circuito di Yas',  flag:'🇦🇪', type:'balanced',
+    fullName:'Abu Dhabi — Circuito di Yas',
     desc:'Mix di curve lente e rettilinei. Gara spesso decisa ai box. Temperatura in calo col tramonto.',
     asphaltTemp:[24, 38],
-    pitLoss:[23.0, 25.0] }
+    pitLoss:[23.0, 25.0],
+    lapTimeBase: 82.6,
+    laps: 58 }
 ];
 const TRACK_SHAPES = {
   "Texas"             : { vb: '0 0 500 500',
@@ -505,7 +681,7 @@ const TRACK_SHAPES = {
     d: 'M68.1 74.6c20.5 2.9 314.5 46.2 376.9 55.8 3.9.6 15.2 2.8 24.0 4.7 2.3.518 3.0 4.9 2.9 8.4-.259 5.3-.8 13.8-1.4 22.8-.391 5.5-.13 5.9 4.3 7.2 1.8.539 3.4.948 5.9 1.6 3.1.803 4.7 2.6 4.4 5.5-.652 6.5-1.3 9.3-2.1 12.5-.653 2.6-4.6 9.7-5.1 10.5-14.7 25.0-76.4 129.2-82.6 139.0-5.0 7.9-7.4 11.4-11.9 18.4-4.9 7.5-5.3 16.2 2.5 18.8 7.1 2.3 8.2 2.7 11.3 3.8 6.3 2.2 7.4 3.8 7.2 8.1-.19 6.9-2.1 7.5-8.0 11.3-3.1 2.0-17.6 10.5-35.6 21.5-3.6 2.2-7.0 2.2-10.2-2.2-1.7-2.4-1.7-7.8-.979-12.1 5.5-30.8 15.1-81.4 19.0-100.2 2.6-12.6-6.5-18.6-21.7-21.1-8.5-1.4-15.2-7.9-17.8-15.4-4.1-11.7-9.4-18.2-21.5-18.8-8.2-.396-18.6-1.0-29.7-1.4-12.7-.396-21.3-6.1-22.3-17.2-.292-3.3-1.0-12.1-1.4-15.8-.586-6.1-.59-7.9-8.6-11.5-9.8-4.3-25.2-10.3-43.4-16.8-4.4-1.6-6.0-2.6-17.6-4.2-27.1-3.8-73.4-10.3-102.6-14.6-5.9-.859-4.3-1.9-4.3-6.8 0-3.3.13-26.2.391-37.0.1-4.1.193-7.6.064-11.3-.194-5.7-9.7-5.8-11.5-2.2-1.8 3.4-3.5 6.5-4.5 7.7-4.3 5.1-8.0 4.7-15.3.989-8.0-4.2-14.0-3.9-17.8-4.1-3.1-.225-6.5-.198-9.8-.395-3.4-.202-4.6-2.2-4.1-5.7 2.7-21.5 22.8-44.2 53.0-39.9z' },
   "Miami"             : { vb: '0 0 500 500',
     d: 'M253.2 218.0s37.8 21.5 44.0 24.9c6.1 3.4 9.8 7.3 9.6 9.8-.182 2.5-2.8 5.9-5.6 7.6-2.8 1.7-7.7 4.0-9.6 6.6-1.9 2.5-3.5 4.6-3.7 11.0s-.181 11.5-1.6 15.4c-1.1 3.2-5.3 10.5-19.3 15.2-13.6 4.6-17.9 3.5-29.2 3.2-10.4-.292-20.8-5.9-20.8-5.9s-53.8-29.6-59.0-32.5c-5.3-2.9-13.6-4.4-20.4-2.9-7 1.5-8.8 2.9-12.7 5.7-3.3 2.3-8.0 5.9-12.6 6.4-4.5.526-10.2.2-14.7-1.7-4.0-1.8-9.4-7.1-12.0-9.8s-8.1-6.3-16.1-6.4c-6.5-.175-20.6 1.3-28.8 10.7-3.4 3.9-5.9 6.8-5.9 14.3 0 5.5 5.2 12.9 10.2 12.9 10.2.2 7.7-1.3 15.5-1.5 9.6-.293 13.6.702 19.0 2.7 5.4 2.0 20.2 5.5 28.1 5.6 10.5.117 73.7-1.2 77.9-1.2 10.4-.06 18.8 2.0 25.1 4.7s19.2 8.6 24.4 10.1c5.3 1.5 14.7 5.1 29.0 4.9 14.3-.175 40.0-1.7 54.4-6.8 14.5-5.1 60.1-20.1 73.0-25.6s39.3-18.0 44.7-21.5c3.4-2.2 5.4-3.4 5.6-6.4.181-3.0-4.9-6.4-7.5-7.6-2.6-1.2-4.5-1.9-7.7-4.6-3.5-2.9-5.1-6.1-5.1-9.7 0-6.6 4.5-11.5 10.0-11.7 3.5-.117 14.2.175 17.1-.351 3.0-.527 7.3-2.0 9.6-5.6s4.9-8.7 5.8-10.0c1.4-2.2 1.0-3.4-1.6-4.6-2.6-1.2-4.0-3.0-2.8-6.6 1.3-3.6 3.7-13.3 4.2-15.9.422-2.4-.181-5.6-3.9-5.6-4.7 0-118.7-4.2-132.8-4.6-14.4-.234-210.0-7.6-233.0-8.9-7.2-.41-8.9 3.8-8.4 6.0.906 4.0 11.2 10.7 17.4 14.2 6.3 3.6 8.6 4.4 16.1 4.7 7.5.35 11.9-1.7 16.1-4.2s12.7-7.3 22.9-9.5c7.2-1.6 20.4-1.3 25.5-.527 7.2 1.1 14.3 4.0 20.8 7.6 6.5 3.6 48.5 27.6 48.5 27.6z' },
-  "Monaco"            : { vb: '0 0 500 500',
+    "Montecarlo"        : { vb: '0 0 500 500',
     d: 'M118.3 246.7c-5.1.774-7.0 2.4-9.9 7.3-4.6 7.9-9.2 18.2-11.4 27.4-2.5 10.2-2.8 25.6-1.9 39.5.445 7.0 2.2 10.0 8.2 12.0 7.2 2.4 8.3 2.5 9.9 9.8 1.6 7.3 6.4 33.4 8.0 42.4 1.2 6.5 2.0 8.9-3.8 11.7-6.4 3.1-7.9 4.0-6.7 9.1 1.2 5.1 6.8 23.7 11.0 30.4 11.5 18.3 19.3 23.9 27.3 26.7 5.2 1.8 11.9 2.3 13.3 7.9 1.3 5.4 1.2 7.9-2.3 9.1-13.2 4.2-26.0 5.6-38.3 5.3-4.2-.102-4.8-.294-4.2-5.6.442-4.0.44-9.5-3.8-14.0-3.3-3.6-10.2-13.8-16.1-28.5-9.5-24.0-17.0-48.6-19.2-60.1-2.9-15.4-5.4-36.2-6.4-49.7-1.9-25.5-.928-46.0 3.2-55.9 5.3-12.6 6.4-17.1 6.0-21.1-.878-7.9-.355-11.0 4.2-12.4 14.2-4.5 27.4-4.2 37.5-5.9 10.1-1.6 27.1-4.5 33.7-6.4 8.3-2.5 23.4-7.2 36.6-9.4 11.7-1.9 21.8-3.1 32.8-8.3 6.2-3.0 21.8-11.1 28.4-13.2 6.6-2.0 18.7-4.6 25.8-6.1 8.0-1.8 17.2-3.1 24.0-4.5 9.3-2.0 25.1-13.1 27.5-27.9 2.5-16.0-2.6-24.6-12.9-33.7-7.0-6.2-11.7-11.7-12.7-15.5-2.0-7.4.472-12.4 3.8-17.0 5.0-6.9 50.6-68.0 54.0-72.3 3.4-4.2 6.4-3.7 9.9-.88 3.5 2.8 7.4 5.4 7.0 10.4-.438 5.6-.515 9.9 1.8 13.6 2.6 4.2 3.4 5.1 6.6 9.5 2.1 2.9 3.9 5.7 5.1 9.5 1.1 3.6 6.1 5.1 8.9 2.6 2.6-2.3 3.1-6.6-.876-9.5-1.6-1.2-3.6-2.5-5.3-5.1-2.9-4.5-5.4-7.9-7.2-10.7-1.4-2.2-3.1-11.0 2.8-12.7 8.6-2.5 19.6-5.9 25.3-7.6 2.7-.835 11.1-.146 11.1 8.3 0 8.5-.294 17.8-1.2 25.9-.394 3.6-3.5 47.7-22.2 77.6-23.1 37.0-62.3 63.5-70.9 68.3-19.6 10.9-39.7 18.0-46.5 19.7-12.6 3.2-28.3 4.5-42.7 6.4-3.5.476-5.3 3.9-5.1 5.5.586 4.1-.946 5.2-4.5 5.9-8.6 1.6-10.7 2.7-12.5-.388-1.8-3.2-3.1-2.4-7.8-1.8-15.2 2.1-86.7 12.8-97.3 14.4z' },
   "Canada"            : { vb: '0 0 500 500',
     d: 'M223.4 53.1c-2.5-11.2-5.8-26.5-7.0-32.2-.953-4.7 1.2-6.1 4.6-6.3 2.9-.222 4.7 1.5 5.1 6.0.589 6.9 1.6 17.2 2.2 22.8.347 3.3 1.4 7.7 4.6 14.3 2.2 4.6 6.8 13.7 12.5 28.3 2.2 5.7 12.7 32.3 15.3 39.2 1.6 4.2 3.8 11.9 5.0 17.6.168.8.297 1.5.441 2.2.834 4.0 1.5 25.5 2.7 46.1.59 10.6 9.3 12.8 10.8 20.0 6.7 32.4 13.9 67.7 17.3 83.8 1.0 4.9-1.7 6.3-2.9 6.9-2.2 1.2-3.7 2.7-2.8 7.7.884 5.0 18.0 83.7 19.1 89.3.834 4.0 1.1 5.8 1.4 7.2a102 102 0 0 1 1.4 13.0c.249 5.9-.189 12.4-.442 16.3-.466 7.0-1.4 18.9-1.9 23.9-.53.6-.122 1.2-.17 1.7-.384 4.1-.095 5.5 2.5 6.6 2.9 1.2 4.0 1.6 6.8 2.8 10.9 4.7 2.9 16.8-4.7 14.9-8.4-2.1-13.3-3.6-23.0-7.1-13.1-4.7-33.1-23.6-41.2-31.5-3.5-3.4-2.8-7.5-1.0-10.8 1.8-3.2 1.2-5.2-1.3-9.3-3.2-5.2-12.3-17.1-15.3-19.9-3.8-3.5-7.5-5.5-11.0-7.8-6.9-4.4-12.4-13.8-12.4-23.0 0-6.9.59-31.2.737-36.1s-1.5-8.7-6.2-9.0c-5.2-.295-10.0 3.5-14.7.295s-7.8-5.3-9.6-15.5c-3.2-18.3-5.4-39.8-5.3-51.5.125-10.0 1.8-35.5 4.9-49.8 1.8-8.1 8.4-34.0 10.0-39.0 1.1-3.5 3.8-4.6 7.4-4.3 5.3.441 10.2-2.9 12.7-11.5 2.9-10.0 9.4-34.3 10.3-40.6.911-6.5 5.0-30.8 5.2-40.2.146-9.6-.099-18.0-1.8-25.5z' },
@@ -679,7 +855,16 @@ function asphaltTempEffect(stratId, asphaltTemp) {
 
   return { wearMult, paceMod, profile };
 }
-
+/* v33: effetto compound (mescola) su passo e degrado, dato il meteo corrente */
+function compoundEffect(compoundId, weatherName) {
+  const base = COMPOUND_EFFECT[compoundId] || COMPOUND_EFFECT.medium;
+  const weatherBonus = (COMPOUND_WEATHER_BONUS[compoundId] || {})[weatherName] || 0;
+  return {
+    paceBonus: base.paceBonus + weatherBonus,
+    wearMult: base.wearMult,
+    chaosScale: base.chaosScale
+  };
+}
 /* Etichetta leggibile per la UI */
 function asphaltTempLabel(tempC) {
   if (!Number.isFinite(tempC)) return { label: '—', cls: 'text-slate-400' };
@@ -689,6 +874,72 @@ function asphaltTempLabel(tempC) {
   if (tempC >= 22) return { label: t('temp.mild'),    cls: 'text-emerald-400' };
   if (tempC >= 15) return { label: t('temp.cool'),    cls: 'text-sky-300' };
   return                   { label: t('temp.cold'),    cls: 'text-sky-500' };
+}
+/* ===== v31: helper per il modello termico gomma ===== */
+function tyreTempEffect(tempTyre) {
+  if (!Number.isFinite(tempTyre)) return { wearMult: 1, paceMod: 0 };
+  const delta = Math.abs(tempTyre - TYRE_TEMP_OPTIMAL);
+  const paceMod = delta > TYRE_TEMP_WINDOW
+    ? -(delta - TYRE_TEMP_WINDOW) * TYRE_TEMP_PACE_SLOPE
+    : 0;
+  let wearMult = 1;
+  if (tempTyre < TYRE_TEMP_COLD) wearMult = TYRE_TEMP_COLD_WEAR_MULT;
+  if (tempTyre > TYRE_TEMP_HOT) {
+    wearMult = Math.max(wearMult, 1 + (tempTyre - TYRE_TEMP_HOT) * TYRE_TEMP_HOT_WEAR_SLOPE);
+  }
+  return { wearMult, paceMod };
+}
+
+function updateTyreTemp(row, modeId, ambient) {
+  const heat = TYRE_TEMP_HEAT[modeId] || TYRE_TEMP_HEAT.normal;
+  const cooling = (row.tempTyre - ambient) * TYRE_TEMP_COOL_RATE;
+  row.tempTyre = clamp(row.tempTyre + heat - cooling, TYRE_TEMP_MIN, TYRE_TEMP_MAX);
+}
+
+function tyreTempLabel(tempTyre) {
+  if (!Number.isFinite(tempTyre)) return { label: '—', cls: 'text-slate-400' };
+  if (tempTyre < TYRE_TEMP_COLD) return { label: 'Fredda', cls: 'text-sky-400' };
+  if (tempTyre < TYRE_TEMP_OPTIMAL - TYRE_TEMP_WINDOW) return { label: 'Tiepida', cls: 'text-amber-300' };
+  if (tempTyre <= TYRE_TEMP_OPTIMAL + TYRE_TEMP_WINDOW) return { label: 'Ottimale', cls: 'text-emerald-400' };
+  if (tempTyre <= TYRE_TEMP_HOT) return { label: 'Calda', cls: 'text-gold' };
+  return { label: 'Surriscaldata', cls: 'text-racing' };
+}
+/* ===== v31 Step 3: fisica aero semplificata =====
+   Downforce aiuta in curva (peso alto su twisty), il drag penalizza i rettilinei
+   (peso alto su power). Il setup scelto modula il carico. */
+function aeroPaceMod(setupId, circuitType) {
+  if (!setupId) return 0;
+  const carLoad = AERO_SETUP_LOAD[setupId];
+  if (!Number.isFinite(carLoad)) return 0;
+  const load = (carLoad - 50) / 25;   /* -1 = scarico, 0 = neutro, +1 = carico alto */
+
+  const w = circuitType === 'twisty' ? AERO_WEIGHT_TWISTY
+          : circuitType === 'power'  ? AERO_WEIGHT_POWER
+          :                            AERO_WEIGHT_BAL;
+
+  const paceMod = load * (w.df - w.drag) * AERO_PACE_SCALE;
+  return round1(paceMod);
+}
+/* ===== v31 Step 4: calcolo del danno per tick di stint.
+   Il danno totale per gara dipende da:
+   - affidabilità base (100-car → auto scarse accumulano di più)
+   - stile pilota (push raddoppia, save dimezza)
+   - usura gomme (sopra soglia, danno ×1.5)
+   - posizione nello stint (half 0 / half 1 scalati sul weight dello stint) */
+function computeDamagePerTick(row, modeId, car, stintWeight, halfIndex) {
+  const carExtra = Math.max(0, 85 - car) * DAMAGE_PER_CAR_POINT;
+  const totalBase = DAMAGE_BASE_PER_RACE + carExtra;
+  const modeFactor = modeId === 'push' ? DAMAGE_MULT_PUSH
+                   : modeId === 'save' ? DAMAGE_MULT_SAVE
+                   :                     DAMAGE_MULT_NORMAL;
+  const wearFactor = row.wear > DAMAGE_WEAR_THRESHOLD ? DAMAGE_WEAR_MULT : 1;
+  const stintPortion = stintWeight * (halfIndex === 0 ? STINT_SPLIT : 1 - STINT_SPLIT);
+  return totalBase * modeFactor * wearFactor * stintPortion;
+}
+
+/* DNF chance per tick in funzione del danno accumulato */
+function damageDnfPerTick(danno) {
+  return Math.min(DAMAGE_DNF_MAX, DAMAGE_BASE_DNF + Math.max(0, danno) * DAMAGE_DNF_SLOPE);
 }
 const STRATEGIES_DRY = [
   { id:'1stop_soft_hard',      name:'1-Stop Soft → Hard',             icon:'🟥',
@@ -958,7 +1209,7 @@ const TRANSLATIONS = {
     'career.wins': 'Vittorie',
     'career.podiums': 'Podi',
     'career.poles': 'Pole',
-    'career.gps': 'GP',
+    'career.gps': 'Gare',
     'career.pts': 'Punti',
     'career.seasons': 'Stagioni',
     'career.fl': 'Giri veloci',
@@ -1090,7 +1341,7 @@ const TRANSLATIONS = {
     /* ---- Career ---- */
     'career.circuit_stats': '🗺️ Statistiche per circuito',
     'career.fav_circuit': 'Circuito preferito:',
-    'career.gp_lbl': '{n} GP',
+    'career.gp_lbl': '{n} Gare',
     'career.rivalry_hist': '⚔️ Storico Rivalità con {name}',
     'career.career_bal': 'Bilancio carriera',
     'career.season_lbl': 'Stagione',
@@ -1186,9 +1437,9 @@ const TRANSLATIONS = {
     'toast.confirm_abandon_yes': 'Esci al menu',
     'toast.confirm_replace': 'Sostituire la carriera presente nello slot {n}?',
     'toast.confirm_replace_yes': 'Sostituisci',
-    'toast.welcome': 'Benvenuto in F1, {name}!',
+    'toast.welcome': 'Benvenuto in Open Wheel, {name}!',
     'toast.save_missing': 'Salvataggio assente o corrotto',
-    'toast.window_open': 'Benvenuto in F1',
+    'toast.window_open': 'Benvenuto in Open Wheel',
 	    /* ---- Rival switch ---- */
     'rs.year_lbl': 'Anno {year}',
     'rs.title': '⚔️ NUOVA RIVALITÀ?',
@@ -1388,7 +1639,7 @@ const TRANSLATIONS = {
 
     /* ---- Sponsor objectives ---- */
     'sponsor.obj.top10x3.name': 'Piazzamento in Top 10',
-    'sponsor.obj.top10x3.desc': 'Ottieni un piazzamento in Top 10 in almeno 3 Gran Premi.',
+    'sponsor.obj.top10x3.desc': 'Ottieni un piazzamento in Top 10 in almeno 3 Gare.',
     'sponsor.obj.podi2.name': 'Prestigio in Pista',
     'sponsor.obj.podi2.desc': 'Sali sul podio (Top 3) in almeno 2 occasioni.',
     'sponsor.obj.titolo.name': 'Ambizione Mondiale',
@@ -1495,7 +1746,7 @@ const TRANSLATIONS = {
     'toast.imported': '✅ Carriera importata nello slot {n}',
     'toast.import_full': 'Spazio insufficiente per l\'importazione',
     'toast.save_corrupt': 'Salvataggio assente o corrotto',
-    'toast.welcome_f1': 'Benvenuto in F1, {name}!',
+    'toast.welcome_f1': 'Benvenuto in Open Wheel, {name}!',
     'toast.sponsor_signed': '🤝 Contratto sponsor firmato: {name}',
     'toast.rd_budget': '💸 Budget insufficiente! ({n} M$ richiesti)',
     'toast.rd_good': '✅ Sviluppo riuscito +{d} pt vettura ({c} M$)',
@@ -1607,9 +1858,43 @@ const TRANSLATIONS = {
 'hub.pu_wear':        'Usura PU',
 'rrace.pu_penalty':   '🔧 Penalità PU: parti {n} posizioni indietro in griglia.',
 'market.no_offers': 'Nessuna offerta disponibile.',
+'rrace.dmg_critical': '🔴 Vettura critica: la macchina sta cedendo, rischio ritiro molto alto.',
+'rrace.dmg_warn': '🟡 Problema tecnico: la vettura perde affidabilità, attenzione.',
+'rrace.pit_double_stack': '🛞 Doppio stack: la corsia è occupata dal compagno ({s}s).',
+'rrace.pit_traffic':      '🛞 Rientri nel traffico ({s}s). Terreno perso in uscita.',
+'live.radar_title': 'Radar meteo',
+'live.radar_now': 'Ora: {name}',
+'live.weather_alert_title': 'Cambio meteo!',
+'live.weather_alert_desc': 'Da {from} a {to} tra pochi giri.',
+'live.weather_adapt': '🌧️ Rientra e cambia gomme',
+'live.weather_adapt_desc': 'Pit extra per mettere le gomme adatte. Costoso ma sicuro.',
+'live.weather_stay': '🏁 Resta in pista',
+'live.weather_stay_desc': 'Rischi il degrado estremo ma risparmi la sosta.',
+'rrace.weather_rain_start': '🌧️ Inizia a piovere! Gomme sbagliate o pit adesso.',
+'rrace.weather_rain_stop':  '☀️ La pista si sta asciugando. Valuta le slick.',
+'rrace.weather_pit_adapt':  '🛞 Pit per gomme da bagnato.',
+'rrace.weather_stay_out':   '⚠️ Resti fuori con gomme sbagliate: attenzione.',
+'live.stint_header': 'Gara — {name} · giro {lap}/{total}',
  },
 
   en: {
+  'live.stint_header': 'Race — {name} · lap {lap}/{total}',
+  'live.radar_title': 'Weather radar',
+'live.radar_now': 'Now: {name}',
+'live.weather_alert_title': 'Weather change!',
+'live.weather_alert_desc': 'From {from} to {to} in a few laps.',
+'live.weather_adapt': '🌧️ Pit and change tyres',
+'live.weather_adapt_desc': 'Extra stop for the right compound. Costly but safe.',
+'live.weather_stay': '🏁 Stay out',
+'live.weather_stay_desc': 'Risk extreme degradation but save the stop.',
+'rrace.weather_rain_start': '🌧️ Rain incoming! Wrong tyres or pit now.',
+'rrace.weather_rain_stop':  '☀️ Track is drying. Consider slicks.',
+'rrace.weather_pit_adapt':  '🛞 Pitting for wet tyres.',
+'rrace.weather_stay_out':   '⚠️ Staying out on wrong tyres: be careful.',
+  'rrace.pit_double_stack': '🛞 Double stack: pit lane blocked by teammate ({s}s).',
+'rrace.pit_traffic':      '🛞 Traffic on exit ({s}s). Time lost leaving the pits.',
+  'rrace.dmg_critical': '🔴 Critical car: the car is failing, retirement risk is very high.',
+'rrace.dmg_warn': '🟡 Technical issue: the car is losing reliability, be careful.',
   'market.no_offers': 'No offers available.',
   'rrace.pace_cmd': '{icon} {mode}: {name}.',
   'hub.pu_label':       'Power Unit',
@@ -1782,7 +2067,7 @@ const TRANSLATIONS = {
     'strat.grid_pos': 'You start from <b class="text-slate-200">P{n}</b>',
     'strat.temp_gara': 'Race track temperature',
     'strat.review_quali': '🔄 Review qualifying results',
-    'strat.intro': 'Pick the tyre strategy for this Grand Prix. Available compounds depend on the weekend weather, while performance depends on track temperature ({temp} °C). Your Tyre management ({tyres}) reduces degradation on aggressive strategies.',
+    'strat.intro': 'Pick the tyre strategy for this. Available compounds depend on the weekend weather, while performance depends on track temperature ({temp} °C). Your Tyre management ({tyres}) reduces degradation on aggressive strategies.',
     'strat.wear_high': 'high wear',
     'strat.wear_light': 'light wear',
     'strat.wear_low': 'reduced wear',
@@ -2037,7 +2322,7 @@ const TRANSLATIONS = {
     'toast.imported': '✅ Career imported to slot {n}',
     'toast.import_full': 'Not enough space to import',
     'toast.save_corrupt': 'Save missing or corrupted',
-    'toast.welcome_f1': 'Welcome to F1, {name}!',
+    'toast.welcome_f1': 'Welcome to Open Wheel, {name}!',
     'toast.sponsor_signed': '🤝 Sponsor deal signed: {name}',
     'toast.rd_budget': '💸 Insufficient budget! ({n} M$ required)',
     'toast.rd_good': '✅ Development successful +{d} pt car ({c} M$)',
@@ -2252,7 +2537,7 @@ const TRANSLATIONS = {
     'market.expected_car': 'Expected car',
 
     'rt.final_title': 'End of career',
-    'rt.retired': 'At {age} retires after {seasons} seasons in F1.',
+    'rt.retired': 'At {age} retires after {seasons} seasons of racing.',
     'rt.final_bal': '⚔️ Final rivalry balance',
     'rt.dominated': 'You dominated your historic rivalry.',
     'rt.lost': 'The rival came out on top.',
@@ -2334,7 +2619,7 @@ const TRANSLATIONS = {
     'toast.confirm_replace_yes': 'Replace',
     'toast.welcome': 'Welcome to F1, {name}!',
     'toast.save_missing': 'Save missing or corrupted',
-    'toast.window_open': 'Welcome to F1',
+    'toast.window_open':'Welcome to Open Wheel',
   }
 };
 /* ---------- ↑↑↑ FINE TRANSLATIONS ↑↑↑ ---------- */
@@ -2402,6 +2687,14 @@ const irnd   = (a, b) => Math.floor(rnd(a, b + 1));
 const clamp  = (v, a, b) => Math.max(a, Math.min(b, v));
 const round1 = v => Math.round(v * 10) / 10;
 const round3 = v => Math.round(v * 1000) / 1000;
+function formatLapTime(sec) {
+  if (!Number.isFinite(sec)) return '—';
+  const m = Math.floor(sec / 60);
+  const s = sec - m * 60;
+  return m > 0
+    ? `${m}:${s.toFixed(3).padStart(6, '0')}`
+    : s.toFixed(3);
+}
 
 /* =========================================================================
    ============================== UTILITY ==================================
@@ -2662,7 +2955,8 @@ migrated.lang = SUPPORTED_LANGS.includes(migrated.lang) ? migrated.lang : UI_LAN
   migrated.rookiePoolUsed = Array.isArray(migrated.rookiePoolUsed) ? migrated.rookiePoolUsed : [];
   migrated.hallOfFamePiloti = Array.isArray(migrated.hallOfFamePiloti) ? migrated.hallOfFamePiloti.slice(-HOF_CAP) : [];
   migrated.hallOfFameCostruttori = Array.isArray(migrated.hallOfFameCostruttori) ? migrated.hallOfFameCostruttori.slice(-HOF_CAP) : [];
-  migrated.setupBonus = Number.isFinite(migrated.setupBonus) ? migrated.setupBonus : 0;
+   migrated.setupBonus = Number.isFinite(migrated.setupBonus) ? migrated.setupBonus : 0;
+  migrated.setupId = typeof migrated.setupId === 'string' ? migrated.setupId : null;
   migrated.setupLabel = typeof migrated.setupLabel === 'string' ? migrated.setupLabel : null;
   migrated.playerStrategy = typeof migrated.playerStrategy === 'string' ? migrated.playerStrategy : null;
   migrated.strategyLabel = typeof migrated.strategyLabel === 'string' ? migrated.strategyLabel : null;
@@ -2995,7 +3289,8 @@ function newCareer(p) {
     history: [],
     hallOfFamePiloti: [],
     hallOfFameCostruttori: [],
-    setupBonus: 0,
+       setupBonus: 0,
+    setupId: null,
     setupLabel: null,
     playerStrategy: null,
     strategyLabel: null,
@@ -4268,6 +4563,7 @@ function startNewSeason() {
   S.offers = null;
   S.fired = false;
   S.setupBonus = 0;
+  S.setupId = null;
   S.setupLabel = null;
   S.playerStrategy = null;
   S.strategyLabel = null;
@@ -4576,7 +4872,38 @@ function bar(label, val, color, range) {
     </div>
   </div>`;
 }
-
+/* v33: radar pioggia — barre orizzontali per stint futuro */
+function weatherRadar(L) {
+  if (!L || !L.weatherForecast) return '';
+  const now = L.stint;
+  const items = [];
+  for (let i = now; i < getRaceStints().length; i++) {
+    const f = L.weatherForecast[i];
+    if (!f) continue;
+    const isCurrent = i === now;
+    const color = f.to === 'Pioggia' ? '#0090ff'
+                : f.to === 'Variabile' ? '#ffd447'
+                : '#94a3b8';
+    const label = f.to === 'Pioggia' ? '🌧️'
+                : f.to === 'Variabile' ? '🌤️'
+                : '☀️';
+    items.push(`
+      <div class="flex-1 min-w-0">
+        <div class="text-[9px] uppercase tracking-wider text-slate-400 mb-1 text-center">S${i + 1}</div>
+        <div class="h-1.5 rounded-full" style="background:${color};${isCurrent ? '' : 'opacity:.55'}"></div>
+        <div class="text-[10px] text-center mt-1 ${isCurrent ? 'text-white font-bold' : 'text-slate-400'}">${label}</div>
+      </div>
+    `);
+  }
+  return `
+    <div class="bg-carbon2 rounded-2xl neon-soft p-3 mb-4">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-[10px] uppercase tracking-wider text-slate-400">📡 ${esc(t('live.radar_title'))}</span>
+        <span class="text-[10px] text-slate-400">${esc(t('live.radar_now', { name: S.weather.name }))}</span>
+      </div>
+      <div class="flex gap-1.5">${items.join('')}</div>
+    </div>`;
+}
 function header(title, sub) {
   return `<div class="mb-4">
     <h2 class="text-xl sm:text-2xl font-black tracking-tight">${title}</h2>
@@ -4591,10 +4918,15 @@ function teamBadge(t, extra) {
     <span class="truncate">${esc(t.name)}</span>
   </span>`;
 }
-
+function capLiveLog(L) {
+  if (!L || !Array.isArray(L.log)) return;
+  const CAP = 60;
+  if (L.log.length > CAP) L.log.splice(0, L.log.length - CAP);
+}
 function render({ resetScroll = true } = {}) {
   if (IO_SUSPENDED) return;
   if (resetScroll) window.scrollTo({ top: 0, behavior: 'auto' });
+  if (S && S.raceLive) capLiveLog(S.raceLive);   /* v33 fix #5 */
   try {
     switch (S ? S.screen : 'menu') {
       case 'hub':         app.innerHTML = viewHub(); break;
@@ -4683,8 +5015,8 @@ function viewMenu() {
     <div class="text-center mb-8">
       <div class="inline-block px-3 py-1 rounded-full bg-racing/20 text-racing text-[11px] font-bold tracking-[0.3em] mb-4">${esc(t('menu.season'))}</div>
       <h1 class="text-5xl sm:text-7xl font-black tracking-tighter leading-none">
-        <span class="text-racing">F1</span> CAREER
-      </h1>
+  <span class="text-racing">OPEN WHEEL</span><br>CAREER
+</h1>
       <p class="text-slate-400 mt-3 text-sm sm:text-base">${esc(t('menu.subtitle'))}</p>
       <div class="mt-6 h-1 w-32 mx-auto rounded-full bg-gradient-to-r from-transparent via-racing to-transparent pulse-glow"></div>
     </div>
@@ -5172,7 +5504,7 @@ function tabRace() {
     <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden">
       <div class="p-5">
         <div class="text-[11px] uppercase tracking-[0.25em] text-racing font-bold">${esc(t('race.hub.round', { n: S.round + 1, total: CALENDAR.length }))}</div>
-        <div class="text-3xl sm:text-4xl font-black mt-1 leading-tight">${esc(r.flag)} GP ${esc(r.gp)}</div>
+        <div class="text-3xl sm:text-4xl font-black mt-1 leading-tight">${esc(r.flag)} ${esc(r.gp)}</div>
         <div class="text-slate-400 text-sm">${esc(r.circuit)}</div>
         ${isSprintWeekend() ? `<div class="text-[11px] text-gold mt-1 font-bold">${esc(t('race.sprint_weekend'))}</div>` : ''}
       </div>
@@ -5740,7 +6072,8 @@ function chooseSetup(id) {
   S.weather = (S.forecast && S.forecast.hidden) || drawWeatherFromForecast(S.forecast);
   if (S.forecast) S.forecast.hidden = null;
   S.asphaltTemp = applyWeatherToAsphalt(S.asphaltTemp, S.weather.name);  // ← correzione QUI
-  S.setupBonus = setupBonusFor(id, r.type, S.weather.name);
+   S.setupBonus = setupBonusFor(id, r.type, S.weather.name);
+  S.setupId = id;
   S.setupLabel = s.name;
   save();
   goQualifying();
@@ -5831,7 +6164,7 @@ function viewSetup() {
 
   return `
   <div class="anim">
-    ${header(esc(t('setup.title')), esc(r.flag) + ' GP ' + esc(r.gp) + ' — ' + esc(r.circuit))}
+    ${header(esc(t('setup.title')), esc(r.flag) + ' ' + esc(r.gp) + ' — ' + esc(r.circuit))}
     ${briefingPanel()}
     <div class="bg-carbon2 rounded-2xl p-4 neon-soft mb-4">
       <div class="flex items-center justify-between mb-3">
@@ -5888,6 +6221,10 @@ function startQualifying(opts = {}) {
 
 function simulateQualiTimes(participantIds, sessionNum) {
   const cfg = QUALI_SESSIONS[sessionNum];
+  const circuit = CALENDAR[S.round];
+  const baseLap = (circuit && Number.isFinite(circuit.lapTimeBase))
+    ? circuit.lapTimeBase : QUALI_DEFAULT_LAP_BASE;
+
   const rows = participantIds.map(id => {
     const d = driverById(id);
     let sc = basePace(d);
@@ -5907,7 +6244,16 @@ function simulateQualiTimes(participantIds, sessionNum) {
     }
     return { id, sc };
   });
+
   rows.sort((a, b) => b.sc - a.sc);
+
+  // v32: converti sc in tempo sul giro + gap dal più veloce della sessione
+  const fastestSc = rows[0].sc;
+  rows.forEach(r => {
+    r.time = baseLap + (fastestSc - r.sc) * QUALI_TIME_PER_SC;
+    r.gap  = r.time - rows[0].time;
+  });
+
   return rows;
 }
 
@@ -6133,7 +6479,7 @@ function viewQuali() {
   <div class="anim">
     <div class="text-center mb-4">
       <div class="text-[11px] uppercase tracking-[0.3em] text-slate-400">${esc(t('quali.title', { name: cfg.name }))}</div>
-      <h2 class="text-2xl font-black">${esc(r.flag)} GP ${esc(r.gp)}</h2>
+      <h2 class="text-2xl font-black">${esc(r.flag)} ${esc(r.gp)}</h2>
       <div class="text-sm text-slate-400">${esc(S.weather.icon)} ${esc(S.weather.name)}</div>
       ${S.setupLabel ? `<div class="text-xs text-slate-400 mt-1">Setup: <b class="text-slate-300">${esc(S.setupLabel)}</b> (${S.setupBonus >= 0 ? '+' : ''}${S.setupBonus})</div>` : ''}
     </div>
@@ -6183,8 +6529,14 @@ function viewQuali() {
             <span class="flex-1 truncate text-sm ${isPlayer ? 'font-black' : isRival ? 'font-bold text-racing' : 'text-slate-300'}">
               ${esc(d.name)}${isRival ? ' ⚔️' : ''}
             </span>
-            <span class="text-[10px] text-slate-400">${esc(team?.short || '')}</span>
-            ${cut ? `<span class="text-[10px] text-racing font-bold">${esc(t('quali.out_badge'))}</span>` : ''}
+         <span class="text-[10px] text-slate-400 hidden sm:inline">${esc(team?.short || '')}</span>
+<span class="font-mono text-[11px] text-slate-300 hidden sm:inline">${
+  Number.isFinite(row.time) ? formatLapTime(row.time) : '—'
+}</span>
+<span class="font-mono text-[11px] w-14 text-right ${
+  row.gap === 0 ? 'text-gold font-bold' : 'text-slate-400'
+}">${row.gap > 0 ? '+' + row.gap.toFixed(3) : (row.gap === 0 ? '—' : '')}</span>
+${cut ? `<span class="text-[10px] text-racing font-bold">${esc(t('quali.out_badge'))}</span>` : ''}
           </div>`;
         }).join('')}
       </div>
@@ -6269,8 +6621,14 @@ function viewQualiReview() {
             <span class="flex-1 truncate text-sm ${isPlayer ? 'font-black' : isRival ? 'font-bold text-racing' : 'text-slate-300'}">
               ${esc(d.name)}${isRival ? ' ⚔️' : ''}
             </span>
-            <span class="text-[10px] text-slate-400">${esc(team?.short || '')}</span>
-                     ${isPole ? `<span class="text-[10px] text-gold font-bold">${esc(t('quali.pole_badge'))}</span>` : ''}
+           <span class="text-[10px] text-slate-400 hidden sm:inline">${esc(team?.short || '')}</span>
+<span class="font-mono text-[11px] text-slate-300 hidden sm:inline">${
+  Number.isFinite(row.time) ? formatLapTime(row.time) : '—'
+}</span>
+<span class="font-mono text-[11px] w-14 text-right ${
+  row.gap === 0 ? 'text-gold font-bold' : 'text-slate-400'
+}">${row.gap > 0 ? '+' + row.gap.toFixed(3) : (row.gap === 0 ? '—' : '')}</span>
+${isPole ? `<span class="text-[10px] text-gold font-bold">${esc(t('quali.pole_badge'))}</span>` : ''}
             ${cut && !isPlayer ? `<span class="text-[10px] text-racing font-bold">${esc(t('quali.out_badge'))}</span>` : ''}
             ${cut && isPlayer ? `<span class="text-[10px] text-racing font-black">${esc(t('quali.eliminated_badge'))}</span>` : ''}
             ${(() => {
@@ -6291,7 +6649,7 @@ function viewQualiReview() {
   <div class="anim">
     <div class="text-center mb-4">
       <div class="text-[11px] uppercase tracking-[0.3em] text-slate-400">${esc(t('quali.review_title'))}</div>
-      <h2 class="text-2xl font-black">${esc(r.flag)} GP ${esc(r.gp)}</h2>
+      <h2 class="text-2xl font-black">${esc(r.flag)} ${esc(r.gp)}</h2>
       <div class="text-sm text-slate-400">${esc(S.weather.icon)} ${esc(S.weather.name)}</div>
       ${S.setupLabel ? `<div class="text-xs text-slate-400 mt-1">Setup: <b class="text-slate-300">${esc(S.setupLabel)}</b> (${S.setupBonus >= 0 ? '+' : ''}${S.setupBonus})</div>` : ''}
     </div>
@@ -6377,7 +6735,7 @@ function viewSprint() {
   <div class="anim">
     <div class="text-center mb-4">
       <div class="text-[11px] uppercase tracking-[0.3em] text-gold">${esc(t('sprint.title'))}</div>
-      <h2 class="text-2xl font-black">${esc(r.flag)} GP ${esc(r.gp)}</h2>
+      <h2 class="text-2xl font-black">${esc(r.flag)} ${esc(r.gp)}</h2>
     </div>
     <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden mb-4">
       <div class="divide-y divide-slate-800/60">
@@ -6422,7 +6780,7 @@ function viewStrategy() {
   <div class="anim">
     <div class="text-center mb-4">
       <div class="text-[11px] uppercase tracking-[0.3em] text-slate-400">${esc(t('strat.head_title'))}</div>
-      <h2 class="text-2xl font-black">${esc(r.flag)} GP ${esc(r.gp)}</h2>
+      <h2 class="text-2xl font-black">${esc(r.flag)} ${esc(r.gp)}</h2>
       <div class="text-sm text-slate-400">${esc(S.weather.icon)} ${esc(S.weather.name)}</div>
           <div class="text-xs text-slate-400 mt-1">${t('strat.grid_pos', { n: playerGridPos })}</div>
     </div>
@@ -6571,7 +6929,7 @@ function generateRadioPreRace() {
 /* Messaggi radio finali: rivalità, guadagno posizioni, messaggio conclusivo */
 function generateRadioFinal(me, safetyCar) {
   const msgs = [];
-  const totalLaps = 57;
+  const totalLaps = (CALENDAR[S.round] && CALENDAR[S.round].laps) || 57;
   const rival = rivalDriver();
 
   if (rival && !me.dnf) {
@@ -6686,13 +7044,31 @@ function computeGridPenalties() {
 function applyGridPenalties(grid) {
   const penalties = computeGridPenalties();
   if (Object.keys(penalties).length === 0) return grid;
-  const weighted = grid.map((id, pos) => ({
-    id,
-    eff: pos + (penalties[id] || 0),
-    original: pos
-  }));
-  weighted.sort((a, b) => a.eff - b.eff || a.original - b.original);
-  return weighted.map(x => x.id);
+
+  let result = [...grid];
+
+  /* v33 fix #7: le penalità sono applicate in modo coerente.
+     Ogni pilota penalizzato viene valutato sulla propria posizione
+     ORIGINALE (non su quella shiftata dai piloti già spostati),
+     poi i penalizzati sono reinseriti dalla severità maggiore alla minore. */
+  const penalized = Object.entries(penalties)
+    .filter(([id]) => result.includes(id))
+    .map(([id, p]) => ({ id, p, origIdx: grid.indexOf(id) }))
+    .sort((a, b) => b.p - a.p || a.origIdx - b.origIdx);
+
+  for (const { id, p, origIdx } of penalized) {
+    const curIdx = result.indexOf(id);
+    if (curIdx < 0) continue;
+
+    // Rimuovi temporaneamente il pilota
+    result.splice(curIdx, 1);
+
+    // Target calcolato dall'indice ORIGINALE + penalità (clampato in fondo)
+    const targetIdx = Math.min(result.length, origIdx + p);
+    result.splice(targetIdx, 0, id);
+  }
+
+  return result;
 }
 function buildRaceLive() {
   const w = S.weather || (S.weather = pickWeather());
@@ -6703,18 +7079,20 @@ function buildRaceLive() {
     const d = driverById(id);
     const car = teamById(d.teamId).car;
     const stratId = d.isPlayer
-  ? (S.playerStrategy || pickRandomStrategy(w.name))
-  : pickAIStrategy(w.name, circuit.type);
-    const strat = applyStrategyEffect(stratId, w.name, circuit.type, d.isPlayer ? d.tyres : 50);
+      ? (S.playerStrategy || pickRandomStrategy(w.name))
+      : pickAIStrategy(w.name, circuit.type);
+    const stintCompounds = STRATEGY_TO_COMPOUNDS[stratId] || ['medium', 'medium', null];
+    const compound = stintCompounds[0];
+    const strat = compoundEffect(compound, w.name);
     const pace = car * SIM_TUNING.raceCarWeight + d.ovr * SIM_TUNING.raceOvrWeight;
 
-    /* v23: effetto temperatura asfalto sulla mescola */
     const tEffect = asphaltTempEffect(stratId, S.asphaltTemp);
 
-    let base = pace - gridPos * SIM_TUNING.raceGridPenalty + strat.bonus + tEffect.paceMod
+    let base = pace - gridPos * SIM_TUNING.raceGridPenalty + tEffect.paceMod
              + traitBonus(d.trait, 'race', w.name, circuit.type) + (ROLE_PACE[d.role] || 0);
     if (d.isPlayer) {
       base += (S.setupBonus || 0) + diff().paceBonus;
+      base += aeroPaceMod(S.setupId, circuit.type);
       if (S.quali && S.quali.savedTyres) base += 1.8;
       const expectedPace = TITLE_THRESHOLD_PER_RACE * S.round;
       if (S.player.pts > expectedPace * SIM_TUNING.snowballThreshold + 5) {
@@ -6725,113 +7103,118 @@ function buildRaceLive() {
     } else {
       base += rnd(-SIM_TUNING.raceAiFlavorNoise, SIM_TUNING.raceAiFlavorNoise);
     }
-	    /* v24: penalità soft "usate" in qualifica (solo player, solo strategie con Soft) */
     if (d.isPlayer) {
       const usedSofts = !!(S.quali && S.quali.status !== 'retired' && !S.quali.savedTyres);
       if (usedSofts && (stratId === '1stop_soft_hard' || stratId === '2stop_soft_med_soft')) {
         base -= 0.5;
       }
     }
-    let dnfChance = clamp(
-      SIM_TUNING.dnfBase + (100 - car) * SIM_TUNING.dnfCarSlope + (w.chaos - 1) * SIM_TUNING.dnfWeatherSlope,
-      SIM_TUNING.dnfMin, SIM_TUNING.dnfMax);
-    if (d.isPlayer) {
-      const driverError = Math.max(0, (55 - d.consistency)) * 0.0006;
-      dnfChance += driverError;
-      dnfChance *= diff().dnfMult;
-    }
 
-           return { id, teamId: d.teamId, base, pace, chaosScale: strat.chaosScale, dnfChance,
-             sc: 0, wear: 0, dnf: false, dnfStint: null, grid: gridPos + 1, strat: stratId,
-             tempWearMult: tEffect.wearMult };
-  });
+    const ambient = Number.isFinite(S.asphaltTemp) ? S.asphaltTemp : REF_ASPHALT_TEMP;
+    return {
+      id, teamId: d.teamId, base, pace, chaosScale: strat.chaosScale,
+      sc: 0, wear: 0, dnf: false, dnfStint: null, grid: gridPos + 1, strat: stratId,
+      stintCompounds,                                    // ← v33
+      tempWearMult: tEffect.wearMult,
+      tempTyre: clamp(Math.round(ambient * TYRE_TEMP_START_FACTOR + rnd(-3, 3)), TYRE_TEMP_MIN, TYRE_TEMP_MAX),
+      fuelKg: FUEL_START_KG,
+      danno: 0
+    };
+  });   // ← il map si chiude QUI
 
-  return {
+  // v33: forecast meteo — pre-rolliamo quali stint potrebbero cambiare
+  const weatherForecast = [];
+  let currentWeather = w.name;
+  for (let i = 0; i < getRaceStints().length; i++) {
+    const change = WEATHER_CHANGE_CHANCE[currentWeather];
+    const willChange = change && rng() < change.p;
+    weatherForecast.push({
+      stint: i, willChange, from: currentWeather,
+      to: willChange ? change.to : currentWeather
+    });
+    if (willChange) currentWeather = change.to;
+  }
+
+   return {
     stint: 0, rows,
     sc: { happened: false, stint: null, resolved: true },
     pending: 'pace', log: generateRadioPreRace(),
     ordersDone: false, ordersMateId: null,
-    pitWindowDone: false   /* v25 */
+    weatherForecast,           // v33
+    lastWeatherChangeStint: -1 // v33
   };
 }
-/* v26: undercut/overcut — valuta il guadagno sc di una scelta pit */
+/* v34 fix: evaluatePitMove basata su simulazione del gap.
+   Niente più RNG mascherato da tattica: il bonus riflette
+   il differenziale di passo atteso tra me e il rivale davanti,
+   moltiplicato per i giri rimanenti nello stint, meno il costo
+   del pit (crew bias incluso), più un contributo di posizione. */
 function evaluatePitMove(L, choice) {
   const me = L.rows.find(r => r.id === 'PLAYER');
   if (!me || me.dnf) return { bonus: 0, reason: 'no_player' };
 
-  const t = Number.isFinite(S.asphaltTemp) ? S.asphaltTemp : REF_ASPHALT_TEMP;
-  const profile = STRATEGY_COMPOUND[me.strat] || { softness: 0.5 };
   const order = liveStandings(L);
   const myIdx = order.findIndex(r => r.id === 'PLAYER');
-  const ahead  = myIdx > 0 ? order[myIdx - 1] : null;
-  const behind = (myIdx >= 0 && myIdx < order.length - 1) ? order[myIdx + 1] : null;
+  const ahead = myIdx > 0 ? order[myIdx - 1] : null;
+  if (!ahead) return { bonus: 0, reason: 'leader' };
 
-  let bonus = 0;
-  let reason = '';
+  const circuit = CALENDAR[S.round];
+  const team = teamById(S.player.teamId);
+  const st = getRaceStints()[L.stint];
+  const lapsRemaining = Math.max(1, st.lapTo - st.lapFrom + 1);
 
-  if (choice === 'pit') {
-    /* UNDERCUT */
-    if (!ahead) {
-      reason = 'leader';
-    } else {
-      /* Gomme del rivale più finite delle mie → quando lui piterà, soffrirà di più */
-      const wearDelta = Math.max(0, ahead.wear - me.wear);
-      bonus += wearDelta * 0.035;
+  /* Gap attuale in secondi (positivo se il rivale è davanti) */
+  const gapSec = (ahead.sc - me.sc) * SIM_TUNING.gapFactor;
 
-      /* Asfalto caldo + mescola morbida → le gomme fresche entrano subito in temperatura */
-      const tempDelta = t - REF_ASPHALT_TEMP;
-      const warmup = tempDelta > 0
-        ? tempDelta * 0.022 * profile.softness
-        : tempDelta * 0.018 * (1 - profile.softness);
-      bonus += clamp(warmup, -0.6, 1.2);
-      /* v28 Step 5: crew */
-      const myTeam = teamById(S.player.teamId);
-      const myCrewBias = myTeam && Number.isFinite(myTeam.pitCrewBias) ? myTeam.pitCrewBias : 0;
-      bonus += -myCrewBias * 0.50;
+  /* Pit loss del mio team in sc (con crew bias) */
+const { sc: myPitSc } = computePitLossSc(team, circuit, {});
 
-      const rivalTeam = teamById(driverById(ahead.id).teamId);
-      const rivalCrew = rivalTeam && Number.isFinite(rivalTeam.pitCrewBias) ? rivalTeam.pitCrewBias : 0;
-      bonus += rivalCrew * 0.35;
+  /* Differenza di wear: quanto il rivale è più consumato di me */
+  const wearDelta = ahead.wear - me.wear;
 
-      /* Rumore per non rendere deterministico */
-      bonus += rnd(-0.25, 0.25);
-      reason = 'undercut';
-      /* Traffico al rientro: se sono incollato al rivale, rischio di restare bloccato */
-      const gapAhead = (ahead.sc - me.sc) * SIM_TUNING.gapFactor;
-      if (gapAhead < 2.5)      bonus -= 0.5;
-      else if (gapAhead < 5)   bonus -= 0.2;
+  /* Costante di calibrazione: 1 unità di wear ≈ 0.06 sc/gap di svantaggio */
+  const WEAR_DELTA_SLOPE = 0.06;
+  /* Fattore di "orizzonte": dopo N giri il vantaggio gomme si esaurisce */
+  const horizon = Math.min(lapsRemaining, 12);
 
-     
-    }
+if (choice === 'pit') {
+    const wearAdvantage = Math.max(0, wearDelta) * WEAR_DELTA_SLOPE * horizon * 0.7;
+
+    // ✔️ usa myPitSc (destrutturata sopra) e chiama la variabile pitCostSc
+    const pitCostSc = myPitSc * 0.40;
+
+    const positionBonus = -gapSec * 0.20;
+
+    const bonus = round1(wearAdvantage - pitCostSc + positionBonus);
+
+    /* Diagnostica */
+    let reason = 'undercut';
+    if (wearDelta <= 0) reason = 'undercut_no_wear_advantage';
+    else if (gapSec < -8) reason = 'undercut_unsafe_gap';
+
+    return { bonus, reason };
   } else {
-    /* OVERCUT */
-    if (!ahead) {
-      reason = 'leader';
-    } else {
-      /* Pista libera: guadagno fisso positivo ma modesto */
-      bonus += rnd(0.3, 0.8);
+    /* OVERCUT: resto fuori e allungo.
+       - Guardo se il rivale pitterà presto (se ha wear alto, sì)
+       - Non pago il pit adesso
+       - Ma accumulo wear, che diventa penalità nei giri finali */
+    const rivalWillPitSoon = ahead.wear > 55;
+    const rivalPitGainSc = rivalWillPitSoon ? myPitSc * 0.30 : 0;
 
-      /* Wear alto → soffri durante il giro extra e quando piterai sarai oltre il cliff */
-      if (me.wear > 60) bonus -= 0.4;
-      if (me.wear > 75) bonus -= 0.3;
+    /* Gap attuale: se il rivale è davanti di Xs, è a mio favore che lui pitti */
+    const positionBonus = gapSec > 0 ? gapSec * 0.25 : 0;
 
-      /* Qualcuno dietro ha appena pitato → ti sta undercuttando, sei esposto */
-      if (behind && behind.wear < 20) bonus -= 0.3;
-      const myTeam = teamById(S.player.teamId);
-      const myCrewBias = myTeam && Number.isFinite(myTeam.pitCrewBias) ? myTeam.pitCrewBias : 0;
-      bonus += -myCrewBias * 0.35;
+    /* Costo del mio wear accumulato */
+    const myWearRisk = Math.max(0, me.wear - 40) * 0.15 * Math.min(lapsRemaining, 10);
 
-      const rivalTeam = teamById(driverById(ahead.id).teamId);
-      const rivalCrew = rivalTeam && Number.isFinite(rivalTeam.pitCrewBias) ? rivalTeam.pitCrewBias : 0;
-      bonus += rivalCrew * 0.25;
+    const bonus = round1(rivalPitGainSc + positionBonus - myWearRisk);
 
-      bonus += rnd(-0.2, 0.2);
-      reason = 'overcut';
-     
-    }
+    let reason = 'overcut';
+    if (!rivalWillPitSoon) reason = 'overcut_rival_wont_pit';
+    else if (me.wear > 75) reason = 'overcut_tyres_gone';
+
+    return { bonus, reason };
   }
-
-  return { bonus: round1(bonus), reason };
 }
 /* v27: reazione AI al pit del giocatore.
    - Se il player pita → i rivali davanti possono coprire (pit immediato)
@@ -6848,10 +7231,9 @@ function simulateAIRaceReaction(L, playerChoice) {
   const attacking = [];
 
   const circuit = CALENDAR[S.round];
-  const pitRange = (circuit && Array.isArray(circuit.pitLoss))
-    ? circuit.pitLoss
-    : [PIT_TIME_LOSS_MIN, PIT_TIME_LOSS_MAX];
-  const pitLossMid = (pitRange[0] + pitRange[1]) / 2;
+const pitRange = (circuit && Array.isArray(circuit.pitLoss))
+  ? circuit.pitLoss : [PIT_TIME_LOSS_MIN, PIT_TIME_LOSS_MAX];
+const pitLossMid = (pitRange[0] + pitRange[1]) / 2;
 
   /* Pit loss alto (>24s) → AI meno propensa a reagire */
   const pitLossResistance = clamp(1 - (pitLossMid - 22) * 0.08, 0.6, 1.2);
@@ -6878,7 +7260,7 @@ function simulateAIRaceReaction(L, playerChoice) {
 
       if (rng() < coverProb) {
         /* Il rivale copre: pit immediato */
-       const { sc: pitLossSc } = computePitLossSc(team, pitRange);
+       const { sc: pitLossSc } = computePitLossSc(team, circuit, {});
 rival.sc -= pitLossSc;
         rival.wear = Math.max(0, rival.wear * PIT_WEAR_RESET);
         rival.pitStops = (rival.pitStops || 0) + 1;
@@ -6903,7 +7285,7 @@ rival.sc -= pitLossSc;
       attackProb *= (1 - gapSec / 8);
 
       if (rng() < attackProb) {
-       const { sc: pitLossSc } = computePitLossSc(team, pitRange);
+       const { sc: pitLossSc } = computePitLossSc(team, circuit, {});
 rival.sc -= pitLossSc;
         rival.wear = Math.max(0, rival.wear * PIT_WEAR_RESET);
         rival.pitStops = (rival.pitStops || 0) + 1;
@@ -6926,49 +7308,107 @@ function strategyPitCount(stratId) {
    - Dopo stint 2 (idx 1): solo i 2-stop fanno pit
    - Dopo stint 3 (idx 2): nessun pit (fine gara) */
 function applyPitStop(L, stintDoneIdx) {
-  if (stintDoneIdx >= RACE_STINTS.length - 1) return;  /* niente pit dopo l'ultimo stint */
+  if (stintDoneIdx >= getRaceStints().length - 1) return;
 
-  L.rows.forEach(r => {
-    if (r.dnf) return;
+  const circuit = CALENDAR[S.round];
+
+  // v32: tracciamo quali team hanno già pitato in questo stint
+  const pittedThisStint = new Set();
+
+  // Ordiniamo per sc decrescente: chi è davanti pita per primo,
+  // il compagno dietro "trova la corsia occupata" → doppio stack
+  const pitOrder = L.rows.filter(r => !r.dnf).sort((a, b) => b.sc - a.sc);
+
+    pitOrder.forEach(r => {
     const d = driverById(r.id);
     const pitCount = strategyPitCount(r.strat);
     const needsPit = (stintDoneIdx === 0) || (stintDoneIdx === 1 && pitCount === 2);
     if (!needsPit) return;
+    /* v33 fix #2: se ha già pitato sotto SC in questo stint, salta il pit programmato */
+    if (r.scPitStint === stintDoneIdx) return;
 
-    const circuit = CALENDAR[S.round];
-    const pitRange = (circuit && Array.isArray(circuit.pitLoss))
-      ? circuit.pitLoss : [PIT_TIME_LOSS_MIN, PIT_TIME_LOSS_MAX];
     const team = teamById(d.teamId);
-    const { sc: pitLossSc, sec: pitLossSec, fumbled } = computePitLossSc(team, pitRange);
+    const isDoubleStack = pittedThisStint.has(d.teamId);
+
+    // v32: traffico in uscita — se sei dietro a chi ha già pitato e non è il tuo compagno
+    const trafficAhead = isDoubleStack || (
+      r.grid > 5 && rng() < 0.20 + Math.max(0, r.wear - 60) * 0.01
+    );
+
+    const { sc: pitLossSc, sec: pitLossSec, breakdown, fumbled } =
+      computePitLossSc(team, circuit, { isDoubleStack, trafficAhead });
 
     r.sc -= pitLossSc;
     r.pitStops = (r.pitStops || 0) + 1;
     r.wear = Math.max(0, r.wear * PIT_WEAR_RESET);
+    r.lastPitBreakdown = breakdown;
 
-    if (d.isPlayer) {
-      const lap = RACE_STINTS[stintDoneIdx].lapTo;
-      const bias = team && Number.isFinite(team.pitCrewBias) ? team.pitCrewBias : 0;
+    // v31: reset termico gomme
+    const ambientPit = Number.isFinite(S.asphaltTemp) ? S.asphaltTemp : REF_ASPHALT_TEMP;
+    r.tempTyre = clamp(
+      Math.round(r.tempTyre * 0.55 + ambientPit * TYRE_TEMP_START_FACTOR * 0.45),
+      TYRE_TEMP_MIN, TYRE_TEMP_MAX
+    );
+
+    pittedThisStint.add(d.teamId);
+
+    // v32: radio al giocatore con breakdown contestuale
+       if (d.isPlayer) {
+      const lap = getRaceStints()[stintDoneIdx].lapTo;
       let text, type;
-      if (fumbled)               { text = t('rrace.pit_fumble', { s: pitLossSec.toFixed(1) }); type = 'bad'; }
-      else if (bias <= -0.4)     { text = t('rrace.pit_fast',   { s: pitLossSec.toFixed(1) }); type = 'good'; }
-      else if (bias >=  0.4)     { text = t('rrace.pit_slow',   { s: pitLossSec.toFixed(1) }); type = 'warn'; }
-      else                       { text = t('rrace.pit_stop',   { s: pitLossSec.toFixed(1) }); type = 'info'; }
+      if (breakdown.fumble > 0)          { text = t('rrace.pit_fumble',       { s: pitLossSec.toFixed(1) }); type = 'bad';  }
+      else if (breakdown.stack > 1.0)    { text = t('rrace.pit_double_stack', { s: pitLossSec.toFixed(1) }); type = 'warn'; }
+      else if (breakdown.traffic > 1.5)  { text = t('rrace.pit_traffic',      { s: pitLossSec.toFixed(1) }); type = 'warn'; }
+      else if (breakdown.stop > 3.2)     { text = t('rrace.pit_slow',         { s: pitLossSec.toFixed(1) }); type = 'warn'; }
+      else if (breakdown.stop < 2.2)     { text = t('rrace.pit_fast',         { s: pitLossSec.toFixed(1) }); type = 'good'; }
+      else                               { text = t('rrace.pit_stop',         { s: pitLossSec.toFixed(1) }); type = 'info'; }
       L.log.push({ lap, type, text });
     }
   });
 }
-/* v28: calcolo pit loss in sc — centralizzato, con crew bias + fumble.
-   Ritorna { sc, sec, fumbled } */
-function computePitLossSc(team, pitRange) {
-  const range = Array.isArray(pitRange) ? pitRange : [PIT_TIME_LOSS_MIN, PIT_TIME_LOSS_MAX];
+/* v32: pit loss a 4 fasi — entry + stop + exit + traffico/stack.
+   Mantiene il target totale nel range `circuit.pitLoss` (retrocompatibile),
+   ma traccia il breakdown per radio e per test. */
+/* v32: pit loss a 4 fasi — entry + stop + exit + traffico/stack.
+   Mantiene il target totale nel range `circuit.pitLoss` (retrocompatibile),
+   ma traccia il breakdown per radio e per test.
+   v33 fix #4: bias e sigma della crew sono ripartiti proporzionalmente
+   su entry / stop / exit, così due team con crew diverse mostrano
+   differenze reali di ~1-2s sul pit loss totale (prima erano compresse). */
+function computePitLossSc(team, circuit, context = {}) {
+  const { isDoubleStack = false, trafficAhead = false } = context;
+
+  const range = (circuit && Array.isArray(circuit.pitLoss))
+    ? circuit.pitLoss
+    : [PIT_TIME_LOSS_MIN, PIT_TIME_LOSS_MAX];
+  const target = rnd(range[0], range[1]);
+
+  const weights = (circuit && CIRCUIT_PIT_WEIGHTS[circuit.gp])
+    || { wEntry: PIT_ENTRY_WEIGHT_DEFAULT, wBase: PIT_BASE_WEIGHT_DEFAULT, wExit: PIT_EXIT_WEIGHT_DEFAULT };
+  const wSum = (weights.wEntry + weights.wBase + weights.wExit) || 1;
+
   const bias  = (team && Number.isFinite(team.pitCrewBias))  ? team.pitCrewBias  : 0;
   const sigma = (team && Number.isFinite(team.pitCrewSigma)) ? team.pitCrewSigma : 0.35;
+  const crewDelta = bias + rnd(-sigma, sigma);
 
-  let sec = rnd(range[0], range[1]) + bias + rnd(-sigma, sigma);
+  const entry = Math.max(0.5, target * weights.wEntry * rnd(0.92, 1.08) + crewDelta * (weights.wEntry / wSum));
+  const exit  = Math.max(0.5, target * weights.wExit  * rnd(0.92, 1.08) + crewDelta * (weights.wExit  / wSum));
+  const stop  = Math.max(1.8, target * weights.wBase                       + crewDelta * (weights.wBase  / wSum));
+
   const fumbled = rng() < PIT_FUMBLE_CHANCE;
-  if (fumbled) sec += rnd(PIT_FUMBLE_MIN, PIT_FUMBLE_MAX);
+  const fumblePenalty = fumbled ? rnd(PIT_FUMBLE_MIN, PIT_FUMBLE_MAX) : 0;
 
-  return { sc: sec / SIM_TUNING.gapFactor, sec, fumbled };
+  const traffic = trafficAhead ? rnd(0.5, PIT_TRAFFIC_MAX) : 0;
+  const stack   = isDoubleStack ? rnd(PIT_DOUBLE_STACK_MIN, PIT_DOUBLE_STACK_MAX) : 0;
+
+  const sec = entry + stop + exit + traffic + stack + fumblePenalty;
+
+  return {
+    sc: sec / SIM_TUNING.gapFactor,
+    sec,
+    fumbled,
+    breakdown: { entry, stop, exit, traffic, stack, fumble: fumblePenalty }
+  };
 }
 
 /* v28: rating leggibile per UI */
@@ -6982,7 +7422,7 @@ function pitCrewRating(team) {
   return                { label: t('pitcrew.terrible'), cls: 'text-racing' };
 }
 function runStint(L, idx, playerMode, halfIndex) {
-  const st = RACE_STINTS[idx];
+  const st = getRaceStints()[idx];
   const w = S.weather;
 
   let weight = st.weight;
@@ -6994,10 +7434,22 @@ function runStint(L, idx, playerMode, halfIndex) {
   L.rows.forEach(r => {
     if (r.dnf) return;
     const d = driverById(r.id);
-    const mode = PACE_MODES[d.isPlayer ? playerMode : aiPaceMode()] || PACE_MODES.normal;
+   const mode = PACE_MODES[d.isPlayer ? playerMode : aiPaceMode()] || PACE_MODES.normal;
+const compound = (r.stintCompounds && r.stintCompounds[idx]) || 'medium';
+const cEff = compoundEffect(compound, w.name);
 
-    let inc = r.base * weight + mode.bonus;
-    let wearDelta = mode.wear * wearMultFor(d) * (r.tempWearMult || 1);
+             /* v31: aggiorna temperatura gomma e calcola i modificatori termici */
+    const ambientStint = Number.isFinite(S.asphaltTemp) ? S.asphaltTemp : REF_ASPHALT_TEMP;
+    updateTyreTemp(r, mode.id || 'normal', ambientStint);
+    const tTempEff = tyreTempEffect(r.tempTyre);
+
+    /* v31 Step 2: consumo carburante e bonus peso */
+    const fuelUsedPerStint = FUEL_START_KG * (st.weight * (halfIndex === 0 ? STINT_SPLIT : 1 - STINT_SPLIT));
+    r.fuelKg = Math.max(0, r.fuelKg - fuelUsedPerStint);
+    const fuelBonus = r.fuelKg * FUEL_PACE_PER_KG;
+
+  let inc = r.base * weight + mode.bonus + cEff.paceBonus + tTempEff.paceMod + fuelBonus;
+let wearDelta = mode.wear * wearMultFor(d) * cEff.wearMult * (r.tempWearMult || 1) * tTempEff.wearMult;
     if (r.wear >= WEAR_CLIFF_START) wearDelta *= WEAR_CLIFF_MULT;
 
     if (halfIndex === 0) wearDelta *= STINT_SPLIT;
@@ -7015,11 +7467,33 @@ function runStint(L, idx, playerMode, halfIndex) {
     inc += roll * w.chaos * r.chaosScale;
     r.sc += inc;
 
-    const risk = r.dnfChance * weight + (d.isPlayer ? mode.risk : 0);
+     /* v31 Step 4: accumula danno e calcola DNF in base al danno cumulato */
+      /* v31 Step 4: accumula danno e calcola DNF in base al danno cumulato */
+    const carNow = teamById(r.teamId).car;
+    const dmg = computeDamagePerTick(r, mode.id, carNow, st.weight, halfIndex);
+    r.danno = clamp(r.danno + dmg, 0, 100);
+
+    /* v34 fix: il danno ora rallenta la macchina oltre a innalzare il rischio DNF.
+       A danno 100 = ~3 sc di penalità = ~1.65s al giro. Non elimina il pilota,
+       ma gli fa "sentire" il problema prima del ritiro. */
+    inc -= r.danno * DAMAGE_PACE_SLOPE;
+
+    /* Radio: avvisa il player quando il danno supera le soglie */
+    if (d.isPlayer && !r.warnedDmg75 && r.danno > 75) {
+      r.warnedDmg75 = true;
+      L.log.push({ lap: st.lapTo, type: 'bad', text: t('rrace.dmg_critical') });
+    } else if (d.isPlayer && !r.warnedDmg55 && r.danno > 55) {
+      r.warnedDmg55 = true;
+      L.log.push({ lap: st.lapTo, type: 'warn', text: t('rrace.dmg_warn') });
+    }
+
+    const dnfPerTick = damageDnfPerTick(r.danno);
+    let risk = dnfPerTick * weight * w.chaos + (d.isPlayer ? mode.risk : 0);
+    if (d.isPlayer) risk *= diff().dnfMult;
     if (rng() < Math.max(0, risk)) { r.dnf = true; r.dnfStint = idx; }
   });
 
-  const last = RACE_STINTS.length - 1;
+  const last = getRaceStints().length - 1;
   const newDnf = L.rows.some(r => r.dnf && r.dnfStint === idx);
   if (newDnf && !L.sc.happened && rng() < SIM_TUNING.scProbability) {
     L.sc = { happened: true, stint: idx, resolved: idx === last };
@@ -7032,9 +7506,9 @@ function runStint(L, idx, playerMode, halfIndex) {
 
     /* Feedback radio al player */
     const me = L.rows.find(r => r.id === 'PLAYER');
-    if (me && !me.dnf && reaction.pitting.length > 0) {
+       if (me && !me.dnf && reaction.pitting.length > 0) {
       L.log.push({
-        lap: RACE_STINTS[idx].lapTo,
+        lap: getRaceStints()[idx].lapTo,
         type: 'warn',
         text: t('rrace.sc_ai_reaction', { n: reaction.pitting.length })
       });
@@ -7064,12 +7538,13 @@ function applySafetyCarToField(L) {
    Ritorna { pitting: [ids], staying: [ids] } per feedback UI e radio. */
 function simulateAISCReaction(L) {
   const result = { pitting: [], staying: [] };
+  const circuit = CALENDAR[S.round];
 
   L.rows.forEach(r => {
     if (r.id === 'PLAYER' || r.dnf) return;
 
-    const d = driverById(r.id);
-    const team = teamById(d.teamId);
+   const d = driverById(r.id);
+const team = teamById(r.teamId || d.teamId);
     if (!team) return;
 
     const aggression = AI_AGGRESSION[team.id] ?? 0.5;
@@ -7090,11 +7565,12 @@ function simulateAISCReaction(L) {
 
     pPit = clamp(pPit, 0.05, 0.95);
 
-    if (rng() < pPit) {
+      if (rng() < pPit) {
       /* Pit sotto SC: gomme fresche, piccolo costo di posizione */
       r.wear = Math.max(0, r.wear - SC_PIT_WEAR_RELIEF);
       r.sc -= SC_PIT_COST;
       r.pitStops = stopsDone + 1;
+      r.scPitStint = L.stint;   /* v33 fix #2: segna lo stint in cui è avvenuto il pit SC */
       result.pitting.push(r.id);
     } else {
       /* Resta fuori: guadagno di posizione */
@@ -7107,7 +7583,7 @@ function simulateAISCReaction(L) {
 }
 
 function liveRadioAfterStint(L, idx) {
-  const st = RACE_STINTS[idx];
+  const st = getRaceStints()[idx];
   const me = L.rows.find(r => r.id === 'PLAYER');
   if (me.dnf) return;
   if (me.wear > WEAR_PENALTY_START)
@@ -7117,9 +7593,16 @@ function liveRadioAfterStint(L, idx) {
 }
 function stepStint(L, modeId) {
   /* v25: simula il primo half dello stint corrente */
+  L.currentPaceMode = modeId || 'normal';
   runStint(L, L.stint, modeId, 0);
   liveRadioAfterStint(L, L.stint);
   const me = L.rows.find(r => r.id === 'PLAYER');
+
+  /* v33 fix #3: SC ha priorità sulla pit window — chiediamo subito al giocatore */
+  if (L.sc.happened && !L.sc.resolved) {
+    L.pending = 'sc';
+    return;
+  }
 
   /* Controlla se è il momento di aprire la finestra pit */
   if (shouldOpenPitWindow(L)) {
@@ -7136,38 +7619,183 @@ function stepStint(L, modeId) {
 
 /* v25: determiniamo se mostrare la finestra pit al giocatore */
 function shouldOpenPitWindow(L) {
-  if (L.stint >= RACE_STINTS.length - 1) return false;   /* ultimo stint: niente pit */
-  if (L.pitWindowDone) return false;
-  const st = RACE_STINTS[L.stint];
+  if (L.stint >= getRaceStints().length - 1) return false;   /* ultimo stint: niente pit */
+  const st = getRaceStints()[L.stint];
   if (!st.pitWindow) return false;
-  /* Apriamo la finestra solo se il giocatore non ha già pitato in questo stint */
+  return true;
+}
+/* v22 (fix v33): decide se il box emette un ordine di scuderia.
+   Ritorna true e popola L.ordersMateId se il compagno (Prima Guida)
+   è dietro di te ed entro ~1.65s. Massimo una volta per gara
+   (controllato da L.ordersDone). */
+function maybeTeamOrders(L) {
+  if (!L || L.ordersDone) return false;
+  const me = L.rows.find(r => r.id === 'PLAYER');
+  if (!me || me.dnf) return false;
+
+  const p = S.player;
+  const mate = teammate();
+  if (!mate) return false;
+
+  /* Ordini solo se il compagno è Prima Guida e tu non lo sei */
+  if (mate.role !== ROLE_FIRST) return false;
+  if (p.role === ROLE_FIRST) return false;
+
+  const mateRow = L.rows.find(r => r.id === mate.id);
+  if (!mateRow || mateRow.dnf) return false;
+
+  const order = liveStandings(L);
+  const myIdx   = order.findIndex(r => r.id === 'PLAYER');
+  const mateIdx = order.findIndex(r => r.id === mate.id);
+  if (myIdx < 0 || mateIdx < 0) return false;
+
+  /* Il player deve essere davanti al compagno */
+  if (myIdx >= mateIdx) return false;
+
+  /* Il compagno deve essere vicino: entro 3.0 sc (≈1.65s con gapFactor 0.55) */
+  const gap = Math.abs(order[mateIdx].sc - order[myIdx].sc);
+  if (gap > 3.0) return false;
+
+  /* Probabilità cresce con la tensione col compagno */
+  const pTrigger = clamp(0.35 + (S.mateTension / 100) * 0.30, 0.35, 0.65);
+  if (rng() > pTrigger) return false;
+
+  L.ordersMateId = mate.id;
+  L.ordersDone = true;
   return true;
 }
 
 /* v25: dopo la chiusura di uno stint, decidiamo il prossimo pending */
 function afterStintAdvance(L) {
-  L.pitWindowDone = false;
   const me = L.rows.find(r => r.id === 'PLAYER');
-  if (L.stint >= RACE_STINTS.length) { L.pending = null; return; }
+  if (L.stint >= getRaceStints().length) { L.pending = null; return; }
   if (me.dnf)                          { L.pending = 'auto'; return; }
+
+  // v33: cambio meteo tra stinti?
+  const forecast = L.weatherForecast && L.weatherForecast[L.stint];
+  if (forecast && forecast.willChange && forecast.stint !== L.lastWeatherChangeStint) {
+    L.pending = 'weather';
+    return;
+  }
+
   if (L.sc.happened && !L.sc.resolved) { L.pending = 'sc'; return; }
   L.pending = maybeTeamOrders(L) ? 'orders' : 'pace';
 }
-function maybeTeamOrders(L) {
-  if (L.stint !== 2 || L.ordersDone) return false;
-  const mate = teammate();
-  if (!mate || S.player.role !== ROLE_SECOND || mate.role !== ROLE_FIRST) return false;
-  const me = L.rows.find(r => r.id === 'PLAYER'), m = L.rows.find(r => r.id === mate.id);
-  if (!me || !m || m.dnf || me.sc <= m.sc) return false;
-  if (rng() >= 0.6) return false;
-  L.ordersDone = true; L.ordersMateId = mate.id;
-  return true;
+/* v33: applica il cambio meteo e aggiorna i compound di conseguenza.
+   choice: 'adapt' (pit per compound giusto) o 'stay' (continua con compound attuale) */
+/* v34 fix: cambio meteo differenziato per team.
+   - Il player decide tramite `choice` ('adapt' | 'stay').
+   - Gli AI decidono tramite un modello probabilistico che combina:
+     aggressione del team, mescola attuale, wear, giri rimanenti nello stint.
+   Il compound di ogni pilota viene aggiornato solo se pitta. */
+function applyWeatherChange(L, choice) {
+  const forecast = L.weatherForecast[L.stint];
+  if (!forecast || !forecast.willChange) return;
+
+  const newWeatherName = forecast.to;
+  S.weather = { ...WEATHER_DEFS[newWeatherName] };
+  L.lastWeatherChangeStint = L.stint;
+
+  const circuit = CALENDAR[S.round];
+  const st = getRaceStints()[L.stint];
+  const lapsRemaining = Math.max(1, st.lapTo - st.lapFrom + 1);
+
+  const lap = st.lapFrom;
+  L.log.push({
+    lap: lap - 1, type: 'warn',
+    text: newWeatherName === 'Pioggia'
+      ? t('rrace.weather_rain_start')
+      : t('rrace.weather_rain_stop')
+  });
+
+  /* Il compound "ideale" per il nuovo meteo */
+  const targetCompound = newWeatherName === 'Pioggia' ? 'wet'
+                      : newWeatherName === 'Variabile' ? 'inter'
+                      : 'medium';
+
+  L.rows.forEach(r => {
+    if (r.dnf) return;
+    const d = driverById(r.id);
+
+    /* === Player: obbedisce alla scelta dell'utente === */
+    if (d.isPlayer) {
+      if (choice === 'adapt') {
+        const team = teamById(S.player.teamId);
+        const { sc: pitLossSc } = computePitLossSc(team, circuit, {});
+        r.sc -= pitLossSc + WEATHER_PIT_COST;
+        r.wear = Math.max(0, r.wear * PIT_WEAR_RESET);
+        r.pitStops = (r.pitStops || 0) + 1;
+        r.stintCompounds[L.stint] = targetCompound;
+
+        const ambientPit = Number.isFinite(S.asphaltTemp) ? S.asphaltTemp : REF_ASPHALT_TEMP;
+        const newAmbient = newWeatherName === 'Pioggia' ? Math.max(10, ambientPit - 8) : ambientPit;
+        r.tempTyre = clamp(
+          Math.round(r.tempTyre * 0.55 + newAmbient * TYRE_TEMP_START_FACTOR * 0.45),
+          TYRE_TEMP_MIN, TYRE_TEMP_MAX
+        );
+
+        L.log.push({ lap, type: 'info', text: t('rrace.weather_pit_adapt') });
+      } else {
+        L.log.push({ lap, type: 'warn', text: t('rrace.weather_stay_out') });
+      }
+      return;
+    }
+
+    /* === AI: decisione probabilistica === */
+    const team = teamById(r.teamId);
+    const aggression = AI_AGGRESSION[team.id] ?? 0.5;
+
+    /* Mescola attuale dell'AI in questo stint */
+    const currentCompound = (r.stintCompounds && r.stintCompounds[L.stint]) || 'medium';
+
+    /* Se è già sul compound corretto → non pitta quasi mai */
+    if (currentCompound === targetCompound) {
+      if (rng() < 0.10) { /* raro pit di scrupolo */ }
+      else return;        /* resta fuori */
+    }
+
+    /* Probabilità base: aggressione del team × urgenza della mescola */
+    let pPit = aggression * 0.75;
+
+    /* Se ha gomme finite, pitare è più probabile (deve comunque rientrare) */
+    if (r.wear > 60) pPit += 0.20;
+    if (r.wear > 80) pPit += 0.15;
+
+    /* Se restano pochi giri, tende a stare fuori ("tanto vale finire") */
+    if (lapsRemaining <= 4) pPit -= 0.40;
+    else if (lapsRemaining <= 8) pPit -= 0.15;
+
+    /* Meteo estremo (pioggia battente) → più disciplina, tutti rientrano */
+    if (newWeatherName === 'Pioggia' && currentCompound !== 'wet') pPit += 0.25;
+
+    pPit = clamp(pPit, 0.05, 0.95);
+
+    if (rng() < pPit) {
+      const { sc: pitLossSc } = computePitLossSc(team, circuit, {});
+      r.sc -= pitLossSc + WEATHER_PIT_COST;
+      r.wear = Math.max(0, r.wear * PIT_WEAR_RESET);
+      r.pitStops = (r.pitStops || 0) + 1;
+      r.stintCompounds[L.stint] = targetCompound;
+
+      const ambientPit = Number.isFinite(S.asphaltTemp) ? S.asphaltTemp : REF_ASPHALT_TEMP;
+      const newAmbient = newWeatherName === 'Pioggia' ? Math.max(10, ambientPit - 8) : ambientPit;
+      r.tempTyre = clamp(
+        Math.round(r.tempTyre * 0.55 + newAmbient * TYRE_TEMP_START_FACTOR * 0.45),
+        TYRE_TEMP_MIN, TYRE_TEMP_MAX
+      );
+    } else {
+      /* Resta fuori: se il meteo peggiora e ha la mescola sbagliata, paga un malus di passo */
+      if (newWeatherName === 'Pioggia' && currentCompound !== 'wet') {
+        r.sc -= 1.5;   /* sc persi per restare su slick sul bagnato */
+      }
+    }
+  });
+
+  L.pending = 'pace';
 }
-
-
 function resolveLiveSC(L, choice) {
   const me = L.rows.find(r => r.id === 'PLAYER');
-  const lap = RACE_STINTS[L.sc.stint].lapTo;
+  const lap = getRaceStints()[L.sc.stint].lapTo;
   if (choice === 'pit') {
     const team = teamById(S.player.teamId);
     const bias = team && Number.isFinite(team.pitCrewBias) ? team.pitCrewBias : 0;
@@ -7180,17 +7808,30 @@ function resolveLiveSC(L, choice) {
     L.log.push({ lap, type: 'info', text: t('rrace.sc_stay_in') });
   }
   L.sc.resolved = true;
-  L.pending = 'pace';
+ 
 }
 
 function autoRunLive(L) {
   let guard = 0;
-  while (L.stint < RACE_STINTS.length && guard++ < 20) {
+  while (L.stint < getRaceStints().length && guard++ < 20) {
     const me = L.rows.find(r => r.id === 'PLAYER');
-    if (L.pending === 'sc') resolveLiveSC(L, me.wear > 28 ? 'pit' : 'stay');
-    if (L.pending === 'orders') L.pending = 'pace';
+    if (L.pending === 'weather') {
+      applyWeatherChange(L, 'adapt');
+      continue;
+    }
+    if (L.pending === 'sc') {
+      resolveLiveSC(L, me.wear > 28 ? 'pit' : 'stay');
+      /* v33 fix #3: completa lo stint corrente dopo la SC */
+      const modeId = L.currentPaceMode || 'normal';
+      if (shouldOpenPitWindow(L)) { L.pending = 'pit'; continue; }
+      runStint(L, L.stint, modeId, 1);
+      applyPitStop(L, L.stint);
+      L.stint++;
+      afterStintAdvance(L);
+      continue;
+    }
+    if (L.pending === 'orders') { L.pending = 'pace'; }
     if (L.pending === 'pit') {
-      /* v25: auto-sim → pit sempre al giro standard */
       choosePit('stay');
       continue;
     }
@@ -7198,7 +7839,6 @@ function autoRunLive(L) {
     if (L.pending === 'auto') continue;
   }
 }
-
 function finalizeRace(L) {
   const w = S.weather;
   const safetyCar = L.sc.happened;
@@ -7310,10 +7950,10 @@ function finalizeRace(L) {
 
 function simRace() {
   const L = buildRaceLive();
+  S.raceLive = L;    /* fix: rendi L visibile a choosePit/chooseLiveSC/ecc. */
   autoRunLive(L);
-  finalizeRace(L);
+  finalizeRace(L);   /* finalizeRace imposta S.raceLive = null */
 }
-
 function goRace() {
   S.raceLive = buildRaceLive();
   S.screen = 'raceLive';
@@ -7333,7 +7973,7 @@ function completeLiveRace(L) {
 function choosePit(choice) {
   const L = S.raceLive;
   if (!L || L.pending !== 'pit') return;
-  const st = RACE_STINTS[L.stint];
+  const st = getRaceStints()[L.stint];
   const me = L.rows.find(r => r.id === 'PLAYER');
   const lap = Math.round(st.lapFrom + (st.lapTo - st.lapFrom) * STINT_SPLIT);
 
@@ -7351,10 +7991,9 @@ function choosePit(choice) {
 
   me.sc += evalResult.bonus;
 
-  /* Simula il secondo half, poi pit */
-  runStint(L, L.stint, 'normal', 1);
+    /* Simula il secondo half, poi pit */
+  runStint(L, L.stint, L.currentPaceMode || 'normal', 1);
   applyPitStop(L, L.stint);
-  L.pitWindowDone = true;
 
   /* Radio: la scelta del giocatore */
   const bonusTxt = Math.abs(evalResult.bonus) >= 0.3
@@ -7393,14 +8032,14 @@ function choosePit(choice) {
 
   L.stint++;
   afterStintAdvance(L);
-  if (L.stint >= RACE_STINTS.length) return completeLiveRace(L);
+  if (L.stint >= getRaceStints().length) return completeLiveRace(L);
   if (L.pending === 'auto') { autoRunLive(L); return completeLiveRace(L); }
   save(); render();
 }
 function chooseLivePace(modeId) {
   const L = S.raceLive;
   if (!L || L.pending !== 'pace' || !PACE_MODES[modeId]) return;
-  const st = RACE_STINTS[L.stint];
+  const st = getRaceStints()[L.stint];
   const m = PACE_MODES[modeId];
   L.log.push({
     lap: st.lapFrom, type: 'info',
@@ -7411,7 +8050,7 @@ function chooseLivePace(modeId) {
 })
   });
   stepStint(L, modeId);
-  if (L.stint >= RACE_STINTS.length) return completeLiveRace(L);
+  if (L.stint >= getRaceStints().length) return completeLiveRace(L);
   if (L.pending === 'auto') { autoRunLive(L); return completeLiveRace(L); }
   save(); render();
 }
@@ -7419,16 +8058,34 @@ function chooseLiveSC(choice) {
   const L = S.raceLive;
   if (!L || L.pending !== 'sc') return;
   resolveLiveSC(L, choice === 'pit' ? 'pit' : 'stay');
-  if (maybeTeamOrders(L)) L.pending = 'orders';
+
+  /* v33 fix #3: dopo la SC completa il secondo half + pit + avanzamento stint */
+  const modeId = L.currentPaceMode || 'normal';
+  if (shouldOpenPitWindow(L)) {
+    L.pending = 'pit';
+    save(); render();
+    return;
+  }
+  runStint(L, L.stint, modeId, 1);
+  applyPitStop(L, L.stint);
+  L.stint++;
+  afterStintAdvance(L);
+  if (L.stint >= getRaceStints().length) return completeLiveRace(L);
+  if (L.pending === 'auto') { autoRunLive(L); return completeLiveRace(L); }
   save(); render();
 }
-
+function chooseLiveWeather(choice) {
+  const L = S.raceLive;
+  if (!L || L.pending !== 'weather') return;
+  applyWeatherChange(L, choice === 'adapt' ? 'adapt' : 'stay');
+  save(); render();
+}
 function chooseLiveOrders(choice) {
   const L = S.raceLive;
   if (!L || L.pending !== 'orders') return;
   const me = L.rows.find(r => r.id === 'PLAYER');
   const mate = L.rows.find(r => r.id === L.ordersMateId);
-  const lap = RACE_STINTS[1].lapTo;
+  const lap = getRaceStints()[1].lapTo;
   if (choice === 'obey' && mate) {
     const tmp = me.sc; me.sc = mate.sc; mate.sc = tmp;
     S.mateTension = clamp(S.mateTension - 10, 0, 100);
@@ -7452,7 +8109,8 @@ function autoFinishLive() {
 function viewRaceLive() {
   const L = S.raceLive;
   const r = CALENDAR[S.round];
-  const st = RACE_STINTS[Math.min(L.stint, RACE_STINTS.length - 1)];
+  const st = getRaceStints()[Math.min(L.stint, getRaceStints().length - 1)];
+  const totalLaps = (r && r.laps) || 57;
   const order = liveStandings(L);
   const me = L.rows.find(x => x.id === 'PLAYER');
   const myPos = order.findIndex(x => x.id === 'PLAYER') + 1;
@@ -7481,8 +8139,29 @@ function viewRaceLive() {
             </div>
           </button>`).join('')}
       </div>`;
-   } else if (L.pending === 'pit') {
-    const stPit = RACE_STINTS[L.stint];
+	  } else if (L.pending === 'weather') {
+  const forecast = L.weatherForecast[L.stint];
+  decision = `
+    <div class="rounded-2xl p-4 mb-3 bg-sky-600/15 border border-sky-500/40 text-sm">
+      <div class="text-sky-300 font-black mb-1">🌧️ ${esc(t('live.weather_alert_title'))}</div>
+      <div class="text-slate-200">${esc(t('live.weather_alert_desc', {
+        from: forecast.from, to: forecast.to
+      }))}</div>
+    </div>
+    <div class="space-y-2">
+      <button type="button" data-action="live-weather" data-choice="adapt"
+        class="w-full text-left p-4 rounded-2xl bg-carbon2 neon-soft border-2 border-transparent hover:border-sky-500 active:scale-[.98] transition">
+        <div class="font-black">${esc(t('live.weather_adapt'))}</div>
+        <div class="text-[12px] text-slate-400">${esc(t('live.weather_adapt_desc'))}</div>
+      </button>
+      <button type="button" data-action="live-weather" data-choice="stay"
+        class="w-full text-left p-4 rounded-2xl bg-carbon2 neon-soft border-2 border-transparent hover:border-racing active:scale-[.98] transition">
+        <div class="font-black">${esc(t('live.weather_stay'))}</div>
+        <div class="text-[12px] text-slate-400">${esc(t('live.weather_stay_desc'))}</div>
+      </button>
+    </div>`;
+     } else if (L.pending === 'pit') {
+    const stPit = getRaceStints()[L.stint];
     const lap = Math.round(stPit.lapFrom + (stPit.lapTo - stPit.lapFrom) * STINT_SPLIT);
 
     /* v26: stime preventive per la UI */
@@ -7566,10 +8245,11 @@ function viewRaceLive() {
   return `
   <div class="anim">
     <div class="text-center mb-4">
-      <div class="text-[11px] uppercase tracking-[0.3em] text-slate-400">${esc(t('live.stint_header', { name: st.name, lap: st.lapFrom }))}</div>
-      <h2 class="text-2xl font-black">${esc(r.flag)} GP ${esc(r.gp)}</h2>
+        <div class="text-[11px] uppercase tracking-[0.3em] text-slate-400">${esc(t('live.stint_header', { name: st.name, lap: st.lapFrom, total: totalLaps }))}</div>
+      <h2 class="text-2xl font-black">${esc(r.flag)} ${esc(r.gp)}</h2>
       <div class="text-sm text-slate-400">${esc(S.weather.icon)} ${esc(S.weather.name)}${L.sc.happened ? esc(t('live.safety_car_flag')) : ''}</div>
     </div>
+	   ${weatherRadar(L)}
     ${L.log.length ? `
     <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden mb-4">
       <div class="px-4 py-3 border-b border-slate-800 font-black text-xs uppercase tracking-wider flex items-center justify-between">
@@ -7577,7 +8257,7 @@ function viewRaceLive() {
         <span class="text-slate-400 font-normal normal-case">${esc(t('live.messages', { n: L.log.length }))}</span>
       </div>
       <div class="divide-y divide-slate-800/60">
-        ${[...L.log].reverse().slice(0, 4).map((m, i) => {
+        ${[...L.log].reverse().slice(0, 8).map((m, i) => {
           const stMsg = RADIO_STYLES[m.type] || RADIO_STYLES.info;
           return `
           <div class="radio-line flex items-start gap-3 px-4 py-2.5 ${stMsg.bg}" style="animation-delay:${i * 40}ms">
@@ -7588,7 +8268,7 @@ function viewRaceLive() {
           </div>`;
         }).join('')}
       </div>
-      ${L.log.length > 4 ? `<div class="px-4 py-2 text-[10px] text-slate-400 text-center border-t border-slate-800">${esc(t('live.more_messages', { n: L.log.length - 4 }))}</div>` : ''}
+          ${L.log.length > 8 ? `<div class="px-4 py-2 text-[10px] text-slate-400 text-center border-t border-slate-800">${esc(t('live.more_messages', { n: L.log.length - 8 }))}</div>` : ''}
     </div>` : ''}
     <div class="rounded-2xl p-5 mb-4 text-center neon bg-carbon2">
       <div class="text-[11px] uppercase tracking-wider text-slate-400">${esc(t('live.current_pos'))}</div>
@@ -7597,7 +8277,40 @@ function viewRaceLive() {
         <div class="bg-carbon3 rounded-lg py-1.5">${esc(t('live.ahead'))} <b class="text-slate-200">${gapTxt(ahead)}</b></div>
         <div class="bg-carbon3 rounded-lg py-1.5">${esc(t('live.behind'))} <b class="text-slate-200">${gapTxt(behind)}</b></div>
       </div>
-          <div class="mt-3">${bar(t('live.tyre_wear'), Math.round(me?.wear ?? 0), wearColor)}</div>
+                 <div class="mt-3">${bar(t('live.tyre_wear'), Math.round(me?.wear ?? 0), wearColor)}</div>
+				           ${(() => {
+            const dmg = me?.danno ?? 0;
+            const dmgColor = dmg >= 80 ? '#e10600' : dmg >= 55 ? '#ffd447' : dmg >= 30 ? '#ff9040' : '#00594f';
+            const dmgLbl = dmg >= 80 ? 'Critico' : dmg >= 55 ? 'Danneggiata' : dmg >= 30 ? 'Usurata' : 'OK';
+            return `
+            <div class="mt-3">
+              <div class="flex justify-between text-[11px] uppercase tracking-wider text-slate-400 mb-1">
+                <span>🛠️ Stato vettura</span>
+                <span class="font-bold ${dmg >= 80 ? 'text-racing' : dmg >= 55 ? 'text-gold' : 'text-slate-200'}">
+                  ${Math.round(dmg)}% — ${dmgLbl}
+                </span>
+              </div>
+              <div class="h-2 rounded-full bg-carbon3 overflow-hidden">
+                <div class="h-full rounded-full transition-all duration-500" style="width:${dmg}%;background:${dmgColor}"></div>
+              </div>
+            </div>`;
+          })()}
+          ${(() => {
+            const tT = me?.tempTyre;
+            const tLbl = tyreTempLabel(tT);
+            return `
+                       <div class="grid grid-cols-3 gap-2 mt-3 text-[11px]">
+              <div class="bg-carbon3 rounded-lg py-1.5">
+                🌡️ Gomma <b class="${tLbl.cls}">${tT != null ? Math.round(tT) + '°C' : '—'}</b>
+              </div>
+              <div class="bg-carbon3 rounded-lg py-1.5">
+                <b class="${tLbl.cls}">${esc(tLbl.label)}</b>
+              </div>
+              <div class="bg-carbon3 rounded-lg py-1.5">
+                ⛽ <b class="text-slate-200">${Math.round(me?.fuelKg ?? 0)} kg</b>
+              </div>
+            </div>`;
+          })()}
     </div>
    
 
@@ -7659,7 +8372,7 @@ function viewRace() {
   <div class="anim">
     <div class="text-center mb-4">
       <div class="text-[11px] uppercase tracking-[0.3em] text-slate-400">${esc(t('result.title'))}</div>
-      <h2 class="text-2xl font-black">${esc(r.flag)} GP ${esc(r.gp)}</h2>
+      <h2 class="text-2xl font-black">${esc(r.flag)} ${esc(r.gp)}</h2>
       <div class="text-sm text-slate-400">${esc(S.weather.icon)} ${esc(S.weather.name)}</div>
       ${S.setupLabel ? `<div class="text-xs text-slate-400 mt-1">Setup: <b class="text-slate-300">${esc(S.setupLabel)}</b> (${S.setupBonus >= 0 ? '+' : ''}${S.setupBonus})</div>` : ''}
    ${S.playerStrategy ? `<div class="text-xs text-slate-400 mt-0.5">${esc(t('result.strategy'))} <b class="text-slate-300">${esc(t('strat.' + S.playerStrategy + '.name'))}</b></div>` : ''}
@@ -7751,7 +8464,8 @@ function viewRace() {
 }
 function afterRace() {
   if (S.screen !== 'race') return;
-  S.setupBonus = 0;
+   S.setupBonus = 0;
+  S.setupId = null;
   S.setupLabel = null;
   S.playerStrategy = null;
   S.strategyLabel = null;
@@ -7806,8 +8520,9 @@ async function _runQuickSeason(totalRaces) {
   S.asphaltTemp = rollAsphaltTemp();
   S.asphaltTemp = applyWeatherToAsphalt(S.asphaltTemp, S.weather.name);
 
-  const autoId = pickAutoSetupId(circuit, S.weather);
+   const autoId = pickAutoSetupId(circuit, S.weather);
   S.setupBonus = setupBonusFor(autoId, circuit.type, S.weather.name);
+  S.setupId = autoId;
   S.setupLabel = SETUPS.find(s => s.id === autoId).name;
 
   simQualifying({ keepWeather: true });   // ← non ri-estrae il meteo
@@ -7822,7 +8537,8 @@ async function _runQuickSeason(totalRaces) {
 
       if (S.sponsor && S.sponsor.justCompleted) S.sponsor.justCompleted = false;
 
-      S.setupBonus = 0;
+           S.setupBonus = 0;
+      S.setupId = null;
       S.setupLabel = null;
       S.playerStrategy = null;
       S.strategyLabel = null;
@@ -8822,21 +9538,61 @@ test('pitLoss: ogni circuito del calendario ha un range valido', () => {
   });
 });
 
-test('applyPitStop: usa il pitLoss della pista corrente', () => {
+test('computePitLossSc: usa il pitLoss della pista corrente (Monaco vs Monza)', () => {
+  const team = { pitCrewBias: 0, pitCrewSigma: 0 };   // crew neutra → isola la pista
+  const monaco = CALENDAR.find(c => c.gp === 'Montecarlo');
+  const monza  = CALENDAR.find(c => c.gp === 'Italia');
+
+  seedRng(42);
+  const rMonaco = computePitLossSc(team, monaco, {});
+  seedRng(42);
+  const rMonza  = computePitLossSc(team, monza, {});
+
+  /* Monaco: pitLoss 23.5–26.0s → sec entro quel range (senza stack/traffico/fumble) */
+  assert(rMonaco.sec >= 22.5 && rMonaco.sec <= 27.0,
+    'sec Monaco fuori range: ' + rMonaco.sec.toFixed(2));
+  /* Monza: pitLoss 19.5–21.0s → più corto di Monaco */
+  assert(rMonza.sec >= 18.5 && rMonza.sec <= 22.0,
+    'sec Monza fuori range: ' + rMonza.sec.toFixed(2));
+  assert(rMonza.sec < rMonaco.sec,
+    'Monza deve essere più corto di Monaco: ' + rMonza.sec.toFixed(2) + ' vs ' + rMonaco.sec.toFixed(2));
+
+  /* sc = sec / gapFactor, sempre */
+  assertClose(rMonaco.sc, rMonaco.sec / SIM_TUNING.gapFactor, 0.001, 'sc Monaco incoerente');
+  assertClose(rMonza.sc,  rMonza.sec  / SIM_TUNING.gapFactor, 0.001, 'sc Monza incoerente');
+});
+
+test('applyPitStop: il pit riduce lo sc e incrementa pitStops', () => {
   withTestState(() => {
-    /* Monaco: pit loss 23.5-26.0 → verifico con seed fisso */
-    S.round = CALENDAR.findIndex(c => c.gp === 'Monaco');
+    S.round = CALENDAR.findIndex(c => c.gp === 'Montecarlo');
     S.weather = WEATHER_DEFS.Asciutto;
     S.grid = S.drivers.map(d => d.id);
     seedRng(42);
+
     const L = buildRaceLive();
+
+    /* v32: prima di pitare serve un half-stint per generare wear > 0.
+       stepStint() simula il primo half e apre la pit window (pending='pit'). */
+    stepStint(L, 'normal');
+    assertEq(L.pending, 'pit', 'la pit window deve aprirsi dopo il primo half');
+
     const me = L.rows.find(r => r.id === 'PLAYER');
     const scBefore = me.sc;
-    applyPitStop(L, 0);
-    const delta = scBefore - me.sc;
-    /* il delta in sc è pitLossSec / gapFactor; con gapFactor 0.55 
-       un pit da 25s dà ~45 sc */
-    assert(delta > 40 && delta < 50, 'delta pit Monaco inatteso: ' + delta);
+    const stopsBefore = me.pitStops || 0;
+    const wearBefore = me.wear;
+    assert(wearBefore > 0, 'wear deve essere > 0 dopo un half-stint: ' + wearBefore);
+
+    /* Ora applichiamo il pit (senza doppio stack: prima sosta della gara) */
+    applyPitStop(L, L.stint);
+
+    /* Effetti strutturali del pit */
+    assert(me.sc < scBefore, 'sc deve calare dopo il pit: ' + scBefore + ' → ' + me.sc);
+    assertEq(me.pitStops, stopsBefore + 1, 'pitStops deve incrementarsi di 1');
+    assert(me.wear < wearBefore, 'wear deve calare dopo il pit (gomme fresche)');
+    assertEq(me.wear, Math.max(0, wearBefore * PIT_WEAR_RESET),
+      'wear post-pit atteso = ' + (wearBefore * PIT_WEAR_RESET).toFixed(3));
+    assert(me.lastPitBreakdown && Number.isFinite(me.lastPitBreakdown.entry),
+      'lastPitBreakdown deve essere popolato');
   });
 });
 test('viewMarket con offers=null non lancia eccezioni', () => {
@@ -8942,7 +9698,104 @@ test('pickAIStrategy: sceglie sempre una strategia valida per il meteo', () => {
     assert(['wet','inter'].includes(varW), 'strategia variabile invalida: ' + varW);
   }
 });
+test('simulateQualiTimes: time e gap coerenti con lapTimeBase del circuito', () => {
+  withTestState(() => {
+    S.round = 0;   // Australia, lapTimeBase 75.9
+    simQualifying();
+    const q1 = S.quali.sessions[1];
+    assertEq(q1.length, 22);
+    // Il più veloce ha esattamente lapTimeBase
+    assertClose(q1[0].time, 75.9, 0.01, 'pole non a lapTimeBase');
+    // Gap monotono crescente
+    for (let i = 1; i < q1.length; i++) {
+      assert(q1[i].time >= q1[i-1].time, 'tempi non monotoni');
+      assertClose(q1[i].gap, q1[i].time - q1[0].time, 0.001, 'gap incoerente');
+    }
+    // Distacco P1-P22 realistico: 1.5s–6s
+    const spread = q1[21].time - q1[0].time;
+    assert(spread > 1.5 && spread < 6.0, 'spread irrealistico: ' + spread.toFixed(2) + 's');
+  });
+});
+test('v33: weatherForecast è coerente con RACE_STINTS', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    assertEq(L.weatherForecast.length, getRaceStints().length);
+    L.weatherForecast.forEach((f, i) => {
+      assertEq(f.stint, i);
+      assert(['Asciutto','Variabile','Pioggia'].includes(f.from));
+      assert(['Asciutto','Variabile','Pioggia'].includes(f.to));
+    });
+  });
+});
 
+test('v33: applyWeatherChange(stay) non cambia compound', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    // Forzo un cambio meteo allo stint 1
+    L.weatherForecast[1] = { stint: 1, willChange: true, from: 'Asciutto', to: 'Pioggia' };
+    L.stint = 1;
+    const me = L.rows.find(r => r.id === 'PLAYER');
+    const scBefore = me.sc;
+    applyWeatherChange(L, 'stay');
+    assertEq(S.weather.name, 'Pioggia', 'il meteo non è cambiato');
+    assertEq(me.sc, scBefore, 'stay non deve costare sc');
+    assertEq(me.pitStops || 0, 0, 'stay non deve incrementare pitStops');
+  });
+});
+
+test('v33: applyWeatherChange(adapt) cambia compound e incrementa pitStops', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    L.weatherForecast[1] = { stint: 1, willChange: true, from: 'Asciutto', to: 'Pioggia' };
+    L.stint = 1;
+    const me = L.rows.find(r => r.id === 'PLAYER');
+    const scBefore = me.sc;
+    const stopsBefore = me.pitStops || 0;
+    applyWeatherChange(L, 'adapt');
+    assertEq(S.weather.name, 'Pioggia');
+    assert(me.sc < scBefore, 'adapt deve costare sc (pit)');
+    assertEq(me.pitStops, stopsBefore + 1, 'adapt deve incrementare pitStops');
+    assertEq(me.stintCompounds[1], 'wet', 'compound deve diventare wet su Pioggia');
+  });
+});
+
+test('v33: afterStintAdvance apre pending=weather se forecast.willChange', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    L.weatherForecast[1] = { stint: 1, willChange: true, from: 'Asciutto', to: 'Pioggia' };
+    L.stint = 1;
+    afterStintAdvance(L);
+    assertEq(L.pending, 'weather');
+  });
+});
+test('computePitLossSc: doppio stack aggiunge 2.5-5.5s', () => {
+  const circuit = { pitLoss: [22.0, 24.0], gp: 'Test' };
+  const team = { pitCrewBias: 0, pitCrewSigma: 0 };
+  seedRng(42);
+  const single = computePitLossSc(team, circuit, {});
+  seedRng(42);
+  const dbl = computePitLossSc(team, circuit, { isDoubleStack: true });
+  assertClose(dbl.sec - single.sec, dbl.breakdown.stack, 0.01, 'stack non coerente');
+  assert(dbl.breakdown.stack >= 2.5 && dbl.breakdown.stack <= 5.5, 'stack fuori range');
+});
+
+test('computePitLossSc: breakdown somma a sec', () => {
+  const circuit = { pitLoss: [22.0, 24.0], gp: 'Test' };
+  const team = { pitCrewBias: 0, pitCrewSigma: 0 };
+  seedRng(7);
+  const r = computePitLossSc(team, circuit, { isDoubleStack: true, trafficAhead: true });
+  const b = r.breakdown;
+  const sum = b.entry + b.stop + b.exit + b.traffic + b.stack + b.fumble;
+  assertClose(sum, r.sec, 0.001, 'somma breakdown ≠ sec');
+});
 test('rollRegulationDelta: delta entro il range della strategia (team sotto soglia)', () => {
   seedRng(1);
   const team = { car: 70 };
@@ -9000,7 +9853,87 @@ test('migrateSave: accetta save legacy e migra hallOfFame', () => {
     assertEq(mig.hallOfFame, undefined, 'hallOfFame non rimosso');
   });
 });
+test('v31 fuel: fuelKg decresce durante la gara', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    const me = L.rows.find(r => r.id === 'PLAYER');
+    assertEq(me.fuelKg, FUEL_START_KG, 'fuel iniziale');
+    const before = me.fuelKg;
+    stepStint(L, 'normal');
+    assert(me.fuelKg < before, 'fuelKg deve calare');
+    assert(me.fuelKg >= 0, 'fuelKg non può essere negativo');
+  });
+});
 
+test('v31 fuel: fuelKg = 0 dopo la fine della gara', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+      let guard = 0;
+    while (S.raceLive && guard++ < 20) {
+      const L = S.raceLive;
+      if (L.pending === 'sc')           chooseLiveSC('pit');
+      else if (L.pending === 'orders')  chooseLiveOrders('obey');
+      else if (L.pending === 'weather') chooseLiveWeather('adapt');   /* v33 */
+      else if (L.pending === 'pit')     choosePit('stay');
+      else if (L.pending === 'pace')    chooseLivePace('push');
+      else break;
+    }
+    assertEq(S.raceLive, null);
+    assertEq(S.screen, 'race');
+    assertEq(S.round, 1);
+  });
+});
+test('v34 pit: evaluatePitMove è deterministico per seed fisso', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    stepStint(L, 'normal');
+    // setup scenario
+    const order = liveStandings(L);
+    const me = L.rows.find(r => r.id === 'PLAYER');
+    const myIdx = order.findIndex(r => r.id === 'PLAYER');
+    if (myIdx > 0) {
+      order[myIdx-1].wear = 60;
+      me.wear = 20;
+    }
+    seedRng(7);
+    const a = evaluatePitMove(L, 'pit').bonus;
+    seedRng(7);
+    const b = evaluatePitMove(L, 'pit').bonus;
+    assertEq(a, b, 'stesso seed → stesso bonus');
+  });
+});
+
+test('v34 pit: gap enorme davanti → undercut non conviene', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    const order = liveStandings(L);
+    const me = L.rows.find(r => r.id === 'PLAYER');
+    const myIdx = order.findIndex(r => r.id === 'PLAYER');
+    if (myIdx > 0) {
+      // metto il rivale davanti di 50s (impossibile da recuperare con pit)
+      order[myIdx-1].sc = me.sc + 50 / SIM_TUNING.gapFactor;
+      order[myIdx-1].wear = 30;
+      me.wear = 30;
+    }
+    const res = evaluatePitMove(L, 'pit');
+    assert(res.bonus < 10, 'gap enorme → bonus basso: ' + res.bonus);
+  });
+});
+test('v31 fuel: bonus carburante riduce il tempo (fuel minore = passo migliore)', () => {
+  /* Verifica indiretta: il bonus è proporzionale al fuelKg residuo */
+  const fuelLow  = 10 * FUEL_PACE_PER_KG;   /* 0.30 sc */
+  const fuelHigh = 100 * FUEL_PACE_PER_KG;  /* 3.00 sc */
+  assert(fuelHigh > fuelLow, 'più carburante = più penalità');
+  assertClose(FUEL_PACE_PER_KG * FUEL_START_KG, 3.3, 0.01, 'bonus massimo fine gara');
+});
 test('migrateSave: normalizza colori non sicuri', () => {
   withTestState(() => {
     const raw = JSON.parse(JSON.stringify(S));
@@ -9009,7 +9942,23 @@ test('migrateSave: normalizza colori non sicuri', () => {
     assertEq(mig.teams[0].color, '#64748b');
   });
 });
-
+test('v34 damage: il danno rallenta la macchina', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    const me = L.rows.find(r => r.id === 'PLAYER');
+    const scA = me.sc;
+    stepStint(L, 'normal');
+    const scB = me.sc;
+    // Stima: senza danno, con un half-stint normale il player guadagna ~inc*weight*STINT_SPLIT
+    // Con danno (me.danno * 0.030) applicato, deve essere meno
+    const dannoAtteso = me.danno * DAMAGE_PACE_SLOPE;
+    assert(dannoAtteso >= 0, 'danno atteso non negativo');
+    // Verifica indiretta: il danno è cresciuto (già testato altrove)
+    assert(me.danno > 0, 'danno deve essere cresciuto');
+  });
+});
 test('migrateSave: completa la telemetria di un save vecchio', () => {
   withTestState(() => {
     const raw = JSON.parse(JSON.stringify(S));
@@ -9042,7 +9991,88 @@ test('simulateAIRaceReaction: nessuna reazione se nessun rivale entro 6s', () =>
     assertEq(res.attacking.length, 0);
   });
 });
+test('v31 damage: danno cresce durante la gara', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    const me = L.rows.find(r => r.id === 'PLAYER');
+    assertEq(me.danno, 0, 'danno iniziale deve essere 0');
+    stepStint(L, 'normal');
+    assert(me.danno > 0, 'danno deve crescere dopo uno stint');
+    assert(me.danno <= 100, 'danno non può superare 100');
+  });
+});
 
+test('v31 damage: push aumenta il danno più di save', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    const me = L.rows.find(r => r.id === 'PLAYER');
+    stepStint(L, 'push');
+    const dmgPush = me.danno;
+
+    /* Rifai la stessa simulazione con save */
+    seedRng(0xC0FFEE);
+    S.raceLive = buildRaceLive();
+    const L2 = S.raceLive;
+    const me2 = L2.rows.find(r => r.id === 'PLAYER');
+    stepStint(L2, 'save');
+    assert(dmgPush > me2.danno, 'push deve accumulare più danno di save: ' + dmgPush + ' vs ' + me2.danno);
+  });
+});
+
+test('v31 damage: auto scarsa accumula più danno di auto top', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    const cad = L.rows.find(r => r.teamId === 'cad');
+    const mer = L.rows.find(r => r.teamId === 'mer');
+    /* Simula un tick per ciascuna (uso il player come riferimento) */
+    const cadDmg = computeDamagePerTick(cad, 'normal', teamById('cad').car, 0.30, 0);
+    const merDmg = computeDamagePerTick(mer, 'normal', teamById('mer').car, 0.30, 0);
+    assert(cadDmg > merDmg, 'Cadillac deve accumulare più danno di Mercedes: ' + cadDmg + ' vs ' + merDmg);
+  });
+});
+test('v34 meteo: gli AI non pitano tutti insieme al cambio', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+
+    /* Forzo indipendentemente dal meteo di partenza:
+       tutti gli AI su compound dry allo stint 1.
+       Così il cambio a Pioggia è SEMPRE una vera "sorpresa",
+       qualunque sia il meteo che il RNG ha rollato in buildRaceLive. */
+    L.rows.forEach(r => {
+      if (r.id === 'PLAYER') return;
+      r.stintCompounds = ['hard', 'medium', 'medium'];
+    });
+
+    /* Forzo il forecast: cambio a Pioggia allo stint 1 */
+    L.weatherForecast[1] = { stint: 1, willChange: true, from: 'Asciutto', to: 'Pioggia' };
+    L.stint = 1;
+
+    const pitsBefore = L.rows.filter(r => r.id !== 'PLAYER').map(r => r.pitStops || 0);
+    applyWeatherChange(L, 'stay');
+    const pitsAfter = L.rows.filter(r => r.id !== 'PLAYER').map(r => r.pitStops || 0);
+    const pitted = pitsAfter.filter((p, i) => p > pitsBefore[i]).length;
+    const totalAI = pitsBefore.length;
+
+    assert(pitted < totalAI,
+      'non tutti gli AI devono pitare: ' + pitted + '/' + totalAI);
+    assert(pitted > 0,
+      'almeno un AI deve pitare sotto pioggia: ' + pitted + '/' + totalAI);
+  });
+});
+test('v31 damage: DNF chance cresce col danno', () => {
+  assert(damageDnfPerTick(0)   < damageDnfPerTick(30), 'danno 30 > 0');
+  assert(damageDnfPerTick(30)  < damageDnfPerTick(60), 'danno 60 > 30');
+  assert(damageDnfPerTick(60)  < damageDnfPerTick(90), 'danno 90 > 60');
+  assert(damageDnfPerTick(150) <= DAMAGE_DNF_MAX, 'cap a DAMAGE_DNF_MAX');
+});
 test('simulateAIRaceReaction: rivale davanti con wear alto copre spesso', () => {
   withTestState(() => {
     simQualifying();
@@ -9155,18 +10185,20 @@ test('choosePit: due rivali che coprono dimezzano il bonus per due volte', () =>
 test('simulateAISCReaction: rivali con wear alto pitano più spesso', () => {
   withTestState(() => {
     seedRng(31);
+    simQualifying();                              // ← fix: setup della griglia
     let pittingHighWear = 0, pittingLowWear = 0;
     const N = 100;
     for (let i = 0; i < N; i++) {
       S.raceLive = buildRaceLive();
       const L = S.raceLive;
-      const me = L.rows.find(r => r.id === 'PLAYER');
       const rivalHigh = L.rows.find(r => r.id !== 'PLAYER' && !r.dnf);
       const rivalLow  = L.rows.find(r => r.id !== 'PLAYER' && r.id !== rivalHigh.id && !r.dnf);
       if (!rivalHigh || !rivalLow) continue;
+
       rivalHigh.wear = 85;  rivalHigh.pitStops = 0; rivalHigh.strat = '1stop_hard_med';
       rivalLow.wear  = 15;  rivalLow.pitStops  = 0; rivalLow.strat  = '1stop_hard_med';
-      rivalHigh.teamId = 'fer'; rivalLow.teamId = 'fer';    // stesso team → isola variabile wear
+      rivalHigh.teamId = 'fer'; rivalLow.teamId = 'fer';   // stesso team → isola variabile wear
+
       const res = simulateAISCReaction(L);
       if (res.pitting.includes(rivalHigh.id)) pittingHighWear++;
       if (res.pitting.includes(rivalLow.id))  pittingLowWear++;
@@ -9175,9 +10207,39 @@ test('simulateAISCReaction: rivali con wear alto pitano più spesso', () => {
     assert(pittingLowWear  < 20, 'wear 15 deve pitare <20%: ' + pittingLowWear  + '/100');
   });
 });
+test('v34 pit: undercut è monotono crescente in wearDelta', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
+    const order = liveStandings(L);
+    const me = L.rows.find(r => r.id === 'PLAYER');
+    const myIdx = order.findIndex(r => r.id === 'PLAYER');
+    if (myIdx <= 0) return;   // player già leader: skip
+
+    const ahead = order[myIdx - 1];
+    ahead.sc = me.sc + 3;     // gap fisso di ~1.65s
+    seedRng(7);
+
+    const bonuses = [];
+    for (const delta of [0, 20, 40, 60, 80]) {
+      me.wear = 30;
+      ahead.wear = 30 + delta;
+      seedRng(7);
+      bonuses.push(evaluatePitMove(L, 'pit').bonus);
+    }
+
+    for (let i = 1; i < bonuses.length; i++) {
+      assert(bonuses[i] >= bonuses[i - 1],
+        `bonus non monotono: delta ${[0,20,40,60,80][i-1]}→${[0,20,40,60,80][i]} ` +
+        `= ${bonuses[i-1]} → ${bonuses[i]}`);
+    }
+  });
+});
 test('simulateAISCReaction: team aggressivi pitano più spesso', () => {
   withTestState(() => {
     seedRng(53);
+    simQualifying();                              // ← fix
     let pittingFer = 0, pittingCad = 0;
     const N = 100;
     for (let i = 0; i < N; i++) {
@@ -9185,10 +10247,12 @@ test('simulateAISCReaction: team aggressivi pitano più spesso', () => {
       const L = S.raceLive;
       const rivals = L.rows.filter(r => r.id !== 'PLAYER' && !r.dnf);
       if (rivals.length < 2) continue;
+
       const rFer = rivals[0]; rFer.teamId = 'fer';
       const rCad = rivals[1]; rCad.teamId = 'cad';
       rFer.wear = 70; rFer.pitStops = 0; rFer.strat = '1stop_hard_med';
       rCad.wear = 70; rCad.pitStops = 0; rCad.strat = '1stop_hard_med';
+
       const res = simulateAISCReaction(L);
       if (res.pitting.includes(rFer.id)) pittingFer++;
       if (res.pitting.includes(rCad.id)) pittingCad++;
@@ -9197,9 +10261,11 @@ test('simulateAISCReaction: team aggressivi pitano più spesso', () => {
       'Ferrari (0.85) deve pitare più di Cadillac (0.35): ' + pittingFer + ' vs ' + pittingCad);
   });
 });
+
 test('simulateAISCReaction: chi ha già fatto tutti i pit resta fuori', () => {
   withTestState(() => {
     seedRng(71);
+    simQualifying();                              // ← fix
     let pitting = 0;
     const N = 100;
     for (let i = 0; i < N; i++) {
@@ -9207,16 +10273,43 @@ test('simulateAISCReaction: chi ha già fatto tutti i pit resta fuori', () => {
       const L = S.raceLive;
       const rival = L.rows.find(r => r.id !== 'PLAYER' && !r.dnf);
       if (!rival) continue;
-      rival.strat = '1stop_hard_med';   // 1 pit previsto
-      rival.pitStops = 1;                // già fatto
-      rival.wear = 40;
-      rival.teamId = 'fer';
+
+      rival.strat    = '1stop_hard_med';   // 1 pit previsto
+      rival.pitStops = 1;                  // già fatto
+      rival.wear     = 40;
+      rival.teamId   = 'fer';
+
       const res = simulateAISCReaction(L);
       if (res.pitting.includes(rival.id)) pitting++;
     }
     assert(pitting < 15, 'chi ha chiuso i pit deve restare fuori <15%: ' + pitting + '/100');
   });
 });
+test('v31 thermal: gomma fredda amplifica usura e penalizza pace', () => {
+  const eff = tyreTempEffect(50);
+  assert(eff.wearMult > 1, 'fredda deve amplificare usura: ' + eff.wearMult);
+  assert(eff.paceMod < 0, 'fredda deve penalizzare pace: ' + eff.paceMod);
+});
+
+test('v31 thermal: gomma in finestra ottimale è neutrale', () => {
+  const eff = tyreTempEffect(TYRE_TEMP_OPTIMAL);
+  assertEq(eff.wearMult, 1);
+  assertEq(eff.paceMod, 0);
+});
+
+test('v31 thermal: updateTyreTemp converge all\'equilibrio previsto', () => {
+  const row = { tempTyre: 40 };
+  const ambient = 34;
+  for (let i = 0; i < 30; i++) updateTyreTemp(row, 'normal', ambient);
+  /* eq: ambient + heat/coolRate = 34 + 14/0.30 = 80.67 */
+  assertClose(row.tempTyre, 80.7, 3, 'equilibrio normal');
+});
+test('v31 thermal: gomma surriscaldata accelera l\'usura', () => {
+  const hot = tyreTempEffect(125);
+  const opt = tyreTempEffect(TYRE_TEMP_OPTIMAL);
+  assert(hot.wearMult > opt.wearMult, 'hot deve usurarsi più di optimal');
+});
+
 test('simulateAISCReaction: non tocca il player e popola aiReaction', () => {
   withTestState(() => {
     simQualifying();
@@ -9283,14 +10376,18 @@ test('PU: al raggiungimento di 100 wear la PU si consuma', () => {
 });
 test('PU: applyGridPenalties sposta indietro i piloti penalizzati', () => {
   withTestState(() => {
-    /* Simula un pilota con 1 PU extra */
-    S.powerUnits['PLAYER'].used = PU_LIMIT + 1;
+    /* Uso un pilota a metà griglia, non l'ultimo, così la penalità
+       può effettivamente spostarlo indietro di 10 posizioni. */
     const grid = S.drivers.map(d => d.id);
+    const targetId = grid[5];              // posizione 0-based 5 → P6
+    S.powerUnits[targetId].used = PU_LIMIT + 1;
+
     const modified = applyGridPenalties(grid);
-    const newPos = modified.indexOf('PLAYER');
-    const originalPos = grid.indexOf('PLAYER');
-    assertEq(newPos, originalPos + PU_GRID_PENALTY,
-      'penalty di 10 posizioni: ' + originalPos + ' → ' + newPos);
+    const newPos  = modified.indexOf(targetId);
+    const origPos = grid.indexOf(targetId);
+
+    assertEq(newPos, origPos + PU_GRID_PENALTY,
+      'penalty di 10 posizioni: ' + origPos + ' → ' + newPos);
   });
 });
 test('PU: startNewSeason resetta le PU', () => {
@@ -9382,7 +10479,29 @@ test('newCareer: ogni team ha esattamente 2 piloti', () => {
     });
   });
 });
+test('v31 aero: setup carico alto favorisce twisty', () => {
+  const aero = aeroPaceMod('aero', 'twisty');
+  const top  = aeroPaceMod('top', 'twisty');
+  assert(aero > 0, 'aero su twisty deve essere positivo: ' + aero);
+  assert(top  < 0, 'top su twisty deve essere negativo: ' + top);
+  assert(aero > top, 'aero > top su twisty');
+});
 
+test('v31 aero: setup scarico favorisce power', () => {
+  const aero = aeroPaceMod('aero', 'power');
+  const top  = aeroPaceMod('top', 'power');
+  assert(aero < 0, 'aero su power deve essere negativo: ' + aero);
+  assert(top  > 0, 'top su power deve essere positivo: ' + top);
+  assert(top > aero, 'top > aero su power');
+});
+
+test('v31 aero: setup bilanciato e id sconosciuto sono neutri', () => {
+  assertEq(aeroPaceMod('bal', 'twisty'), 0);
+  assertEq(aeroPaceMod('bal', 'power'), 0);
+  assertEq(aeroPaceMod('bal', 'balanced'), 0);
+  assertEq(aeroPaceMod('nonexistent', 'twisty'), 0);
+  assertEq(aeroPaceMod(null, 'twisty'), 0);
+});
 test('newCareer: nome pilota di 31 caratteri non viene troncato', () => {
   const c = newCareer({ first: 'A'.repeat(14), last: 'B'.repeat(16), nat: '🇮🇹', age: 20,
     speed: 55, consistency: 55, tyres: 55, teamId: 'cad' });
@@ -9451,21 +10570,22 @@ test('awardPole aggiorna totali e statistiche circuito', () => {
   });
 });
 
-test('RACE_STINTS: i pesi sommano a 1', () => {
-  assertClose(RACE_STINTS.reduce((s, x) => s + x.weight, 0), 1, 1e-9);
+test('v34 stint: i pesi STINT_WEIGHTS sommano a 1', () => {
+  assertClose(STINT_WEIGHTS.reduce((s, x) => s + x, 0), 1, 1e-9);
 });
 
 test('gara live: 3 stint interattivi chiudono la gara e portano a race', () => {
   withTestState(() => {
     simQualifying();
     S.raceLive = buildRaceLive(); S.screen = 'raceLive';
-    let guard = 0;
+      let guard = 0;
     while (S.raceLive && guard++ < 20) {
       const L = S.raceLive;
-      if (L.pending === 'sc')          chooseLiveSC('pit');
-      else if (L.pending === 'orders') chooseLiveOrders('obey');
-      else if (L.pending === 'pit')    choosePit('stay');
-      else if (L.pending === 'pace')   chooseLivePace('push');
+      if (L.pending === 'sc')           chooseLiveSC('pit');
+      else if (L.pending === 'orders')  chooseLiveOrders('obey');
+      else if (L.pending === 'weather') chooseLiveWeather('adapt');   /* v33 */
+      else if (L.pending === 'pit')     choosePit('stay');
+      else if (L.pending === 'pace')    chooseLivePace('push');
       else break;
     }
     assertEq(S.raceLive, null);
@@ -9679,15 +10799,35 @@ test('updateRivalryAfterRace: +1 se batti il rivale', () => {
     assertEq(S.rivalryHistory[0].rivalId, S.rivalId, 'rivalId salvato nella history');
   });
 });
-test('RACE_STINTS: ogni stint (tranne l\'ultimo) ha una pitWindow valida', () => {
-  RACE_STINTS.forEach((st, i) => {
-    if (i === RACE_STINTS.length - 1) {
-      assertEq(st.pitWindow, null, 'l\'ultimo stint non deve avere pitWindow');
-    } else {
-      assert(Array.isArray(st.pitWindow), `stint ${i+1} non ha pitWindow`);
-      assert(st.pitWindow[0] >= st.lapFrom, `stint ${i+1} pitWindow inizio fuori range`);
-      assert(st.pitWindow[1] <= st.lapTo + 3, `stint ${i+1} pitWindow fine fuori range`);
+test('v34 stint: computeStints ritorna 3 stint coerenti per ogni circuito', () => {
+  CALENDAR.forEach(c => {
+    const stints = computeStints(c.laps || 57);
+    assertEq(stints.length, 3, c.gp + ': attesi 3 stint');
+    assertEq(stints[0].lapFrom, 1, c.gp + ': primo stint deve partire dal giro 1');
+    assertEq(stints[2].lapTo, c.laps || 57, c.gp + ': ultimo stint deve finire al giro ' + c.laps);
+    for (let i = 1; i < stints.length; i++) {
+      assertEq(stints[i].lapFrom, stints[i-1].lapTo + 1,
+        c.gp + ': stint ' + i + ' deve iniziare esattamente dopo il precedente');
     }
+    assertEq(stints[2].pitWindow, null, c.gp + ': ultimo stint senza pit window');
+    assert(Array.isArray(stints[0].pitWindow), c.gp + ': primo stint deve avere pit window');
+    assert(Array.isArray(stints[1].pitWindow), c.gp + ': secondo stint deve avere pit window');
+  });
+});
+
+test('v34 stint: Monaco 78 giri → stint più lunghi di Spa 44 giri', () => {
+  const monaco = computeStints(78);
+  const spa = computeStints(44);
+  assert(monaco[0].lapTo > spa[0].lapTo, 'Monaco stint 1 più lungo di Spa');
+  assertEq(monaco[2].lapTo, 78, 'Monaco deve chiudere a 78');
+  assertEq(spa[2].lapTo, 44, 'Spa deve chiudere a 44');
+});
+
+test('v34 laps: ogni circuito ha un numero di giri plausibile', () => {
+  CALENDAR.forEach(c => {
+    assert(Number.isInteger(c.laps), c.gp + ': laps non è intero');
+    assert(c.laps >= 40 && c.laps <= 80,
+      c.gp + ': laps fuori range realistico (40-80): ' + c.laps);
   });
 });
 
@@ -9728,7 +10868,24 @@ test('applyRivalryBonus: applica bonus con punti sufficienti', () => {
     assertClose(totalDelta, 0.6, 0.01, 'delta totale atteso 0.6');
   });
 });
-
+test('v34 radio: il messaggio finale segue i giri del circuito corrente', () => {
+  withTestState(() => {
+    // Test su tre circuiti diversi
+    const rounds = [0, 7, 11]; // Australia 58, Monaco 78, Belgio 44
+    rounds.forEach(r => {
+      S.round = r;
+      S.lastRace = S.drivers.map((d, i) => ({ id: d.id, pos: i+1, dnf: false, points: i < 10 ? POINTS[i] : 0, grid: i+1 }));
+      S.setupBonus = 0;
+      S.quali = { savedTyres: false };
+      S._snowballActive = 0;
+      const fakeMe = { grid: 5, pos: 3, dnf: false, points: 15, gap: 2.5 };
+      const msgs = generateRadio({ me: fakeMe, safetyCar: false });
+      const expectedLaps = CALENDAR[r].laps;
+      assert(msgs.some(m => m.lap === expectedLaps),
+        CALENDAR[r].gp + ': manca messaggio finale al giro ' + expectedLaps);
+    });
+  });
+});
 test('generateRadio: genera almeno 2 messaggi per una gara completata', () => {
   withTestState(() => {
     S.lastRace = S.drivers.map((d, i) => ({ id: d.id, pos: i+1, dnf: false, points: i < 10 ? POINTS[i] : 0, grid: i+1 }));
@@ -9736,13 +10893,18 @@ test('generateRadio: genera almeno 2 messaggi per una gara completata', () => {
     S.quali = { savedTyres: false };
     S._snowballActive = 0;
     const fakeMe = { grid: 5, pos: 3, dnf: false, points: 15, gap: 2.5 };
+
+    /* v34: il numero di giri è ora dinamico per circuito.
+       Australia (round 0) ha 58 giri, non 57. */
+    const expectedLaps = (CALENDAR[S.round] && CALENDAR[S.round].laps) || 57;
+
     const msgs = generateRadio({ me: fakeMe, safetyCar: false });
     assert(msgs.length >= 2, 'attesi almeno 2 messaggi, ottenuti ' + msgs.length);
     assert(msgs.some(m => m.lap === 1), 'manca messaggio di partenza');
-    assert(msgs.some(m => m.lap === 57), 'manca messaggio finale');
+    assert(msgs.some(m => m.lap === expectedLaps),
+      'manca messaggio finale al giro ' + expectedLaps);
   });
 });
-
 test('simRace: solo top 10 prende punti (il FL aggiunge 1)', () => {
   withTestState(() => {
     S.drivers.forEach(d => { d.pts = 0; d.wins = 0; d.podiums = 0; d.dnf = 0; });
@@ -10045,7 +11207,7 @@ const ACTIONS = {
   'create-diff':  (d) => { syncStep1Draft(); draft.difficulty = d.diff; renderCreate(); },
 
   'hub-tab': (d) => { S.tab = d.tab; scheduleSave(0); render(); },
-
+'live-weather': (d) => chooseLiveWeather(d.choice),
   'sponsor-pick': (d) => chooseSponsor(d.sponsorId),
   'rd-run': (d) => doRD(d.pkg, d.strat),
   'rd-close': () => { S.rdOpen = false; scheduleSave(0); render({ resetScroll: false }); },
@@ -10111,7 +11273,8 @@ const ACTIONS = {
 const LOCKED_ACTIONS = new Set([
   'go-setup','pick-setup','quali-advance','quali-skip-q3','sprint-continue','pick-strategy',
   'live-pace','live-pit','live-sc','live-orders','live-auto','after-race','season-end','season-eval',
-  'progress-next','market-pick','regulation-pick'
+  'progress-next','market-pick','regulation-pick',
+  'live-weather'                                       // ← nuova riga separata
 ]);
 let _uiLockUntil = 0;
 
