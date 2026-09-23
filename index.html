@@ -1,6 +1,10 @@
 <!DOCTYPE html>
 <html lang="it">
 <head>
+<meta name="description" content="Simulatore di carriera Formula: crea il tuo pilota, gestisci R&D, strategie e rivalità. Gioca gratis nel browser, senza installazione.">
+<meta property="og:title" content="Open Wheel Career — Simulatore di Carriera Formula">
+<meta property="og:description" content="Simulatore di carriera Formula gratis nel browser.">
+<meta property="og:type" content="website">
 <script data-goatcounter="https://openwheel.goatcounter.com/count"
         async src="//gc.zgo.at/count.js"></script>
 <meta charset="UTF-8">
@@ -3891,7 +3895,14 @@ function doRD(pkgId, stratId, silent) {
   S.budget = budgetRef.value;
   S.rdDone++;
   if (S.rdDone >= 2) S.rdOpen = false;
-  if (silent) return true;
+   if (silent) return true;
+
+  /* Analytics: sviluppo R&D scelto */
+  window.goatcounter?.count({
+    path: 'event/rd/' + pkgId + '/' + stratId,
+    title: 'R&D: ' + pkgId + ' / ' + stratId,
+    event: true
+  });
 
   save();
   render({ resetScroll: false });
@@ -3940,6 +3951,12 @@ function chooseSponsor(id) {
   save();
   render({ resetScroll: false });
   toast(t('toast.sponsor_signed', { name: sponsorText(offer, 'name') }), 'good');
+
+  window.goatcounter?.count({
+    path: 'event/sponsor/' + id,
+    title: 'Sponsor: ' + id,
+    event: true
+  });
 }
 /* =========================================================================
    ==================== PLAYER PROGRESSION =================================
@@ -4643,8 +4660,16 @@ function endSeason() {
     rivalryBonus: rivalryBonus.applied > 0 ? rivalryBonus : null
   };
 
-  S.rivalryPoints = 0;
+   S.rivalryPoints = 0;
   resolveSeasonCareerState(pos);
+
+  /* Analytics: stagione completata */
+  window.goatcounter?.count({
+    path: 'event/season/' + S.year + '/' + (wonTitle ? 'champion' : 'P' + pos),
+    title: 'Stagione ' + S.year + ': ' + (wonTitle ? 'Campione' : 'P' + pos),
+    event: true
+  });
+
   save();
   render();
 }
@@ -4985,6 +5010,13 @@ function applyPlayerRegulationChoice(approachId) {
   t('reg.toast', { name: t('reg.strat.' + approachId + '.name'), delta: (delta >= 0 ? '+' : '') + round1(delta) }),
   delta >= 3 ? 'good' : delta < 0 || flop ? 'bad' : 'neutral'
 );
+
+/* Analytics: scelta regolamento */
+window.goatcounter?.count({
+  path: 'event/regulation/' + approachId + (flop ? '/flop' : ''),
+  title: 'Regolamento: ' + approachId + (flop ? ' (flop)' : ''),
+  event: true
+});
 }
 
 /* =========================================================================
@@ -5529,8 +5561,13 @@ function createFinish() {
   save();
   render();
   toast(t('toast.welcome_f1', { name: S.player.last }), 'good');
-}
 
+  window.goatcounter?.count({
+    path: 'event/career-started/' + draft.difficulty + '/' + draft.teamId,
+    title: 'Carriera: ' + draft.difficulty + ' / ' + draft.teamId,
+    event: true
+  });
+}
 function continueCareer() {
   S = load(CURRENT_SLOT);
   if (!S) { toast(t('toast.save_corrupt'), 'bad'); return; }
@@ -8261,7 +8298,16 @@ function finalizeRace(L) {
   }
 
     /* v29 Step 7: consuma PU dopo ogni GP */
+  /* v29 Step 7: consuma PU dopo ogni GP */
   advancePUWear(race);
+
+  /* Analytics: gara finita */
+  const resultTag = me.dnf ? 'DNF' : 'P' + me.pos;
+  window.goatcounter?.count({
+    path: 'event/race/' + resultTag,
+    title: 'Gara ' + race.gp + ': ' + resultTag,
+    event: true
+  });
 
   S.round++;
   S.raceLive = null;
@@ -8813,6 +8859,12 @@ function quickSeason() {
 function startQuickSeason() {
   const totalRaces = CALENDAR.length - S.round;
   if (totalRaces <= 0) return;
+
+  window.goatcounter?.count({
+    path: 'event/quick-sim/' + totalRaces,
+    title: 'Quick sim: ' + totalRaces + ' gare',
+    event: true
+  });
 
   app.innerHTML = `
     <div class="anim min-h-[85vh] flex flex-col justify-center text-center px-6">
