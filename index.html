@@ -11741,7 +11741,7 @@ S = null;
 
 const IS_TEST_MODE = new URLSearchParams(location.search).has('test');
 const IS_DEBUG = new URLSearchParams(location.search).has('debug');
-
+window.getState = () => S;
 if (IS_DEBUG) {
   window.debugInvariants       = debugInvariants;
   window.debugTelemetry        = debugTelemetry;
@@ -11772,5 +11772,197 @@ window.addEventListener('pagehide', () => { if (S) flushSave(true); });
 document.addEventListener('visibilitychange', () => { if (document.hidden && S) flushSave(true); });
 
 </script>
+<!-- ===== Ko-fi Support Widget (custom, self-contained, bilingual) ===== -->
+<style>
+  #kofiRoot {
+    position: fixed;
+    right: max(1rem, env(safe-area-inset-right, 1rem));
+    bottom: max(1.25rem, env(safe-area-inset-bottom, 1.25rem));
+    z-index: 45;
+  }
+  #kofiRoot.kofi-hidden { display: none !important; }
+
+  #kofiBtn {
+    width: 56px; height: 56px; border-radius: 9999px;
+    background: #ffd447; color: #0b0d10;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 0 1px rgba(255,212,71,.5), 0 10px 30px -8px rgba(0,0,0,.8);
+    cursor: pointer; border: 0; padding: 0;
+    transition: transform .18s ease, box-shadow .18s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #kofiBtn:hover { transform: scale(1.08); box-shadow: 0 0 0 1px rgba(255,212,71,.75), 0 14px 34px -8px rgba(0,0,0,.9); }
+  #kofiBtn:active { transform: scale(.94); }
+  #kofiBtn svg { pointer-events: none; display: block; }
+
+  #kofiPanel {
+    position: absolute; right: 0; bottom: calc(56px + 12px);
+    width: min(320px, calc(100vw - 2rem));
+    background: #12161c; border: 1px solid rgba(255,212,71,.35);
+    border-radius: 16px; padding: 16px 16px 14px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 20px 50px -12px rgba(0,0,0,.9);
+    opacity: 0; visibility: hidden; transform: translateY(8px) scale(.96);
+    transform-origin: bottom right;
+    transition: opacity .18s ease, transform .18s ease, visibility .18s;
+    color: #cbd5e1;
+  }
+  #kofiPanel.open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
+  #kofiPanel h3 { color: #ffd447; font-size: 15px; font-weight: 900; margin: 0 0 6px; }
+  #kofiPanel p  { font-size: 12.5px; line-height: 1.5; color: #94a3b8; margin: 0 0 14px; }
+  #kofiPanel .kofi-cta {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; padding: 12px 16px; border-radius: 12px;
+    background: #ffd447; color: #0b0d10; font-weight: 900; font-size: 14px;
+    text-decoration: none; border: 0; cursor: pointer;
+    transition: filter .18s ease, transform .12s ease;
+  }
+  #kofiPanel .kofi-cta:hover { filter: brightness(1.08); }
+  #kofiPanel .kofi-cta:active { transform: scale(.97); }
+  #kofiPanel .kofi-maybe {
+    display: block; text-align: center; margin-top: 10px;
+    font-size: 11px; color: #64748b; text-decoration: none;
+  }
+  #kofiPanel .kofi-maybe:hover { color: #94a3b8; }
+  #kofiPanel .kofi-close {
+    position: absolute; top: 6px; right: 10px;
+    background: transparent; border: 0; color: #64748b;
+    font-size: 20px; line-height: 1; cursor: pointer; padding: 4px;
+  }
+  #kofiPanel .kofi-close:hover { color: #cbd5e1; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #kofiBtn, #kofiPanel, #kofiPanel .kofi-cta { transition: none !important; }
+  }
+</style>
+
+<div id="kofiRoot" class="kofi-hidden">
+  <div id="kofiPanel" role="dialog" aria-label="" aria-hidden="true">
+    <button type="button" class="kofi-close" aria-label="" onclick="kofiClose()">&times;</button>
+    <h3></h3>
+    <p></p>
+    <a class="kofi-cta"
+       href="https://ko-fi.com/openwheelcareer"
+       target="_blank" rel="noopener noreferrer"
+       onclick="if(window.gtag)gtag('event','kofi_click');if(window.plausible)plausible('Ko-fi Click');">
+    </a>
+    <a class="kofi-maybe"
+       href="https://ko-fi.com/openwheelcareer"
+       target="_blank" rel="noopener noreferrer">
+    </a>
+  </div>
+
+  <button type="button" id="kofiBtn" aria-label="" aria-expanded="false" onclick="kofiToggle()">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M18 8h1a3 3 0 0 1 0 6h-1"/>
+      <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/>
+      <line x1="6" y1="1" x2="6" y2="4"/>
+      <line x1="10" y1="1" x2="10" y2="4"/>
+      <line x1="14" y1="1" x2="14" y2="4"/>
+    </svg>
+  </button>
+</div>
+
+<script>
+  (function(){
+    var root  = document.getElementById('kofiRoot');
+    var panel = document.getElementById('kofiPanel');
+    var btn   = document.getElementById('kofiBtn');
+
+    var STRINGS = {
+      it: {
+        title:  '☕ Sostieni il progetto',
+        desc:   'Open Wheel Career è gratuito, senza account e senza pubblicità. Se ti sta divertendo, un caffè mi aiuta a tenerlo online e in sviluppo attivo.',
+        cta:    '☕ Offrimi un caffè',
+        maybe:  'oppure guarda la pagina Ko-fi →',
+        close:  'Chiudi',
+        btn:    'Sostieni su Ko-fi',
+        dialog: 'Sostieni Open Wheel Career'
+      },
+      en: {
+        title:  '☕ Support the project',
+        desc:   'Open Wheel Career is free, no account, no ads. If you\'re enjoying it, a coffee helps me keep it online and in active development.',
+        cta:    '☕ Buy me a coffee',
+        maybe:  'or visit the Ko-fi page →',
+        close:  'Close',
+        btn:    'Support on Ko-fi',
+        dialog: 'Support Open Wheel Career'
+      }
+    };
+
+    function currentLang(){
+      try {
+        var S = (typeof window.getState === 'function') ? window.getState() : null;
+        if (S && (S.lang === 'it' || S.lang === 'en')) return S.lang;
+        var v = localStorage.getItem('f1_career_lang');
+        if (v === 'en' || v === 'it') return v;
+      } catch (_) {}
+      return 'it';
+    }
+
+    function applyLang(){
+      var lang = currentLang();
+      var s = STRINGS[lang] || STRINGS.it;
+
+      var h3    = panel.querySelector('h3');
+      var p     = panel.querySelector('p');
+      var cta   = panel.querySelector('.kofi-cta');
+      var maybe = panel.querySelector('.kofi-maybe');
+      var close = panel.querySelector('.kofi-close');
+
+      if (h3)    h3.textContent = s.title;
+      if (p)     p.textContent  = s.desc;
+      if (cta)   cta.textContent = s.cta;
+      if (maybe) maybe.textContent = s.maybe;
+      if (close) close.setAttribute('aria-label', s.close);
+      panel.setAttribute('aria-label', s.dialog);
+      btn.setAttribute('aria-label', s.btn);
+    }
+
+    window.kofiToggle = function(){
+      var isOpen = panel.classList.toggle('open');
+      panel.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
+      btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    };
+    window.kofiClose = function(){
+      panel.classList.remove('open');
+      panel.setAttribute('aria-hidden', 'true');
+      btn.setAttribute('aria-expanded', 'false');
+    };
+
+    document.addEventListener('click', function(e){
+      if (!root.contains(e.target)) window.kofiClose();
+    });
+    document.addEventListener('keydown', function(e){
+      if (e.key === 'Escape') window.kofiClose();
+    });
+
+    var HIDE_SCREENS = { raceLive:1, quali:1, sprint:1, setup:1, strategy:1 };
+    function updateVisibility(){
+      try {
+        var S = (typeof window.getState === 'function') ? window.getState() : null;
+        if (!S) { root.classList.add('kofi-hidden'); return; }
+        var shouldHide = !!HIDE_SCREENS[S.screen];
+        root.classList.toggle('kofi-hidden', shouldHide);
+        if (shouldHide) window.kofiClose();
+      } catch (_) {}
+    }
+
+    // Applica la lingua all'avvio + su ogni cambio
+    applyLang();
+
+    var app = document.getElementById('app');
+    if (app) {
+      var mo = new MutationObserver(function(){
+        updateVisibility();
+        applyLang();
+      });
+      mo.observe(app, { childList: true });
+    }
+    setInterval(function(){ updateVisibility(); applyLang(); }, 800);
+    updateVisibility();
+  })();
+</script>
+<!-- ===== /Ko-fi Support Widget ===== -->
 </body>
 </html>
