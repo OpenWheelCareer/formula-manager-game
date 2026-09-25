@@ -2821,6 +2821,12 @@ function setLang(lang) {
   try { localStorage.setItem(LANG_KEY, lang); } catch (_) {}
   if (S) { S.lang = lang; save(); }
   render();
+
+  window.goatcounter?.count({
+    path: 'event/lang/' + lang,
+    title: 'Lingua: ' + lang.toUpperCase(),
+    event: true
+  });
 }
 
 /* =========================================================================
@@ -4579,6 +4585,12 @@ function resolveSeasonCareerState(pos) {
   if (p.age >= RETIRE_AGE) {
     S.retired = true;
     S.pendingScreenAfterProgress = 'retire';
+
+    window.goatcounter?.count({
+      path: 'event/career-end/retire',
+      title: 'Ritiro: ' + S.totals.seasons + ' stagioni, ' + S.totals.titles + ' titoli, OVR ' + p.ovr,
+      event: true
+    });
     return;
   }
 
@@ -4587,6 +4599,12 @@ function resolveSeasonCareerState(pos) {
     if (S.offers.length === 0) {
       S.gameOver = true;
       S.pendingScreenAfterProgress = 'gameover';
+
+      window.goatcounter?.count({
+        path: 'event/career-end/gameover',
+        title: 'Fine senza offerte: ' + S.totals.seasons + ' stagioni, OVR ' + p.ovr,
+        event: true
+      });
       return;
     }
     S.pendingScreenAfterProgress = 'market';
@@ -4612,7 +4630,13 @@ function endSeason() {
   const mate = teammate();
   const champion = standings[0];
   const wonTitle = champion?.isPlayer === true;
-
+if (wonTitle) {
+  window.goatcounter?.count({
+    path: 'event/first-title/' + S.totals.titles,
+    title: 'Titolo #' + S.totals.titles + ' (anno ' + S.year + ')',
+    event: true
+  });
+}
   if (!champion) {
     S.gameOver = true;
     S.screen = 'gameover';
@@ -11845,11 +11869,12 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && S) 
     <a class="kofi-cta"
        href="https://ko-fi.com/openwheelcareer"
        target="_blank" rel="noopener noreferrer"
-       onclick="if(window.gtag)gtag('event','kofi_click');if(window.plausible)plausible('Ko-fi Click');">
+      onclick="if(window.goatcounter)goatcounter.count({path:'event/kofi-cta', title:'Ko-fi CTA click', event:true});"
     </a>
     <a class="kofi-maybe"
        href="https://ko-fi.com/openwheelcareer"
-       target="_blank" rel="noopener noreferrer">
+       target="_blank" rel="noopener noreferrer"
+	    onclick="if(window.goatcounter)goatcounter.count({path:'event/kofi-page', title:'Ko-fi page view', event:true});">
     </a>
   </div>
 
