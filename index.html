@@ -310,10 +310,16 @@ const COMPOUND_EFFECT = {
   wet:    { paceBonus: 0,    wearMult: 1.0,  chaosScale: 1.0 }
 };
 
-/* v33: bonus compound × meteo (le intermedie rendono su Variabile, ecc.) */
+/* v35: bonus/malus compound × meteo.
+   - Le mescole wet (inter, wet) hanno bonus su meteo bagnato e malus sull'asciutto.
+   - Le mescole dry (soft, medium, hard) ora hanno un malus simmetrico quando
+     si trovano sul bagnato: chi resta su slick sotto la pioggia paga il prezzo. */
 const COMPOUND_WEATHER_BONUS = {
-  inter: { Variabile: 4.5, Pioggia: -3.0, Asciutto: -4.0 },
-  wet:   { Pioggia: 4.5,   Variabile: -6.5, Asciutto: -8.0 }
+  soft:   { Pioggia: -6.5, Variabile: -2.5 },
+  medium: { Pioggia: -5.5, Variabile: -2.0 },
+  hard:   { Pioggia: -5.0, Variabile: -1.5 },
+  inter:  { Variabile: 4.5, Pioggia: -3.0, Asciutto: -4.0 },
+  wet:    { Pioggia: 4.5,   Variabile: -6.5, Asciutto: -8.0 }
 };
 const WEAR_PENALTY_START = 50;
 const WEAR_PENALTY_SLOPE = 0.12;
@@ -2010,9 +2016,13 @@ const TRANSLATIONS = {
 'rd.tech_leader':      'Riferimento tecnico del campionato',
 'rd.tech_from_leader': 'dal leader',
 'rd.tech_from_next':   'dal prossimo',
+    'market.no_offers_desc': 'Nessuna scuderia ti ha offerto un contratto per la prossima stagione. La tua carriera in F1 finisce qui.',
+    'market.retire_btn': 'CHIUDI LA CARRIERA',
  },
 
   en: {
+      'market.no_offers_desc': 'No team offered you a contract for next season. Your F1 career ends here.',
+    'market.retire_btn': 'END CAREER',
   /* ---- HQ ---- */
 'hq.title':            'Headquarters',
 'hq.total_levels':     'Total levels',
@@ -3179,6 +3189,13 @@ migrated.lang = SUPPORTED_LANGS.includes(migrated.lang) ? migrated.lang : UI_LAN
   migrated.pendingScreenAfterProgress = typeof migrated.pendingScreenAfterProgress === 'string'
     ? migrated.pendingScreenAfterProgress : null;
   migrated._snowballActive = 0;
+    migrated.lastHeadline = (migrated.lastHeadline && typeof migrated.lastHeadline === 'object')
+    ? migrated.lastHeadline : null;
+  migrated._headlineLastIdx = (migrated._headlineLastIdx && typeof migrated._headlineLastIdx === 'object')
+    ? migrated._headlineLastIdx : {};
+  migrated._prevChampionshipPos = Number.isInteger(migrated._prevChampionshipPos)
+    ? migrated._prevChampionshipPos : null;
+	  migrated._wasChampion = !!migrated._wasChampion;
 
   /* v22 */
   migrated.difficulty = DIFFICULTIES[migrated.difficulty] ? migrated.difficulty : 'normal';
@@ -3521,7 +3538,11 @@ const teams = TEAM_DB.map(t => ({
     lastFastestLap: null,
     sprintDone: false,
 	    asphaltTemp: null,   /* popolato al primo goSetup() del weekend */
-    powerUnits,          /* v29 Step 7 */
+    powerUnits,    
+       lastHeadline: null,
+    _headlineLastIdx: {},
+    _prevChampionshipPos: null,	/* v29 Step 7 */
+    _wasChampion: false,        /* v36 */
   };
   career.rngState = RNG_STATE >>> 0;
   const requestedRivalId = (typeof p.rivalId === 'string' && p.rivalId) ? p.rivalId : null;
@@ -5677,6 +5698,7 @@ function viewHub() {
         </div>`;
       })()}
 </div>
+    ${headlineCard()}
     ${rivalCard()}
     ${roleCard()}
 
@@ -5737,7 +5759,43 @@ function rivalCard() {
     </div>` : ''}
   </div>`;
 }
+/* v36: card testata giornalistica con l'ultima headline */
+function headlineCard() {
+  const h = S.lastHeadline;
+  if (!h) return '';
 
+  const r = resolveHeadlineText(h);
+  if (!r) return '';
+
+  const toneMap = {
+    good:     { border: 'border-emerald-600/40', accent: 'text-emerald-400', icon: '✅' },
+    bad:      { border: 'border-racing/40',      accent: 'text-racing',      icon: '🚨' },
+    neutral:  { border: 'border-slate-600/40',   accent: 'text-slate-300',   icon: '📰' },
+    dramatic: { border: 'border-gold/50',        accent: 'text-gold',        icon: '🏆' }
+  };
+  const s = toneMap[r.tone] || toneMap.neutral;
+
+  return `
+  <div class="card overflow-hidden mb-4 border ${s.border}">
+    <div class="px-4 py-2 bg-gradient-to-r from-carbon3 to-transparent flex items-center justify-between">
+      <span class="text-[11px] uppercase tracking-wider font-black ${s.accent}">📰 ${esc(r.press.name)}</span>
+      <span class="text-[10px] uppercase tracking-wider text-slate-500">${esc(r.press.tag)}</span>
+    </div>
+    <div class="p-4">
+      <div class="flex items-start gap-3">
+        <div class="text-2xl shrink-0 mt-0.5">${s.icon}</div>
+        <div class="min-w-0 flex-1">
+          <div class="font-black text-base leading-snug text-white">${esc(r.title)}</div>
+          ${r.sub ? `<div class="text-[12px] text-slate-400 mt-1 leading-relaxed">${esc(r.sub)}</div>` : ''}
+        </div>
+      </div>
+      <div class="mt-3 flex items-center justify-between text-[10px] uppercase tracking-wider text-slate-500">
+        <span>${esc(h.flag)} ${esc(h.gp)} · ${h.year}</span>
+        <span>${esc(r.press.date)}</span>
+      </div>
+    </div>
+  </div>`;
+}
 function roleCard() {
   const mate = teammate();
   if (!mate) return '';
@@ -5907,7 +5965,11 @@ function tabRace() {
           <div class="flex items-center gap-3 text-sm">
             <span>${esc(l.flag)}</span>
             <span class="flex-1 truncate text-slate-300">${esc(l.gp)}</span>
-            ${l.sc ? '<span class="text-[10px] text-gold" title="Safety Car">🚨</span>' : ''}
+                       ${l.sc ? '<span class="text-[10px] text-gold" title="Safety Car">🚨</span>' : ''}
+          ${l.headline ? (() => {
+  const rr = resolveHeadlineText(l.headline);
+  return `<span class="text-[10px] ${rr.tone === 'dramatic' ? 'text-gold' : rr.tone === 'bad' ? 'text-racing' : rr.tone === 'good' ? 'text-emerald-400' : 'text-slate-400'}" title="${esc(rr.title)}">📰</span>`;
+})() : ''}
             ${l.fl ? '<span class="text-[10px] text-purple-400 font-bold" title="Fastest lap">FL</span>' : ''}
             <span class="text-[11px] text-slate-400">P${l.grid} →</span>
             <span class="font-black ${l.dnf ? 'text-racing' : l.pos <= 3 ? 'text-gold' : 'text-white'}">${l.dnf ? 'DNF' : 'P' + l.pos}</span>
@@ -6612,6 +6674,8 @@ function simulateQualiTimes(participantIds, sessionNum) {
   );
   let q = rnd(-cfg.noise, cfg.noise);
   if (q < 0) q *= negScale;
+  /* v35: compensa il bias positivo dell'asimmetria, così E[q] = 0 */
+  if (negScale < 1) q -= cfg.noise * (1 - negScale) / 4;
   sc += q * (1 + (S.weather.chaos - 1) * SIM_TUNING.qualiWeatherChaosScale);
 } else {
       sc += rnd(-cfg.noise, cfg.noise) * (1 + (S.weather.chaos - 1) * SIM_TUNING.qualiWeatherChaosScale);
@@ -7063,12 +7127,17 @@ function simSprint() {
     let sc = car * SIM_TUNING.raceCarWeight + d.ovr * SIM_TUNING.raceOvrWeight
            - gridPos * SIM_TUNING.raceGridPenalty * 1.25
            + traitBonus(d.trait, 'race', w.name, circuit.type) + (ROLE_PACE[d.role] || 0);
+       /* v35: la consistency riduce la coda negativa (errori), ma compensiamo
+       il bias positivo risultante in modo che E[roll] = 0 per alta consistency.
+       Così consistency = meno errori, NON più velocità. */
     let roll = rnd(-amp, amp);
     if (d.isPlayer) {
       sc += diff().paceBonus * 0.5;
       const negScale = clamp(1 - (d.consistency - 50) * SIM_TUNING.raceNegScaleConsistency,
                              SIM_TUNING.raceNegScaleMin, SIM_TUNING.raceNegScaleMax);
       if (roll < 0) roll *= negScale;
+      /* v35: compensa il bias positivo dell'asimmetria, così E[roll] = 0 */
+      if (negScale < 1) roll -= amp * (1 - negScale) / 4;
     }
     sc += roll * w.chaos;
     let dnfChance = clamp(SIM_TUNING.dnfBase + (100 - car) * SIM_TUNING.dnfCarSlope, 0.02, 0.08) * 0.5;
@@ -7689,6 +7758,43 @@ function strategyPitCount(stratId) {
    - Dopo stint 1 (idx 0): tutti fanno pit
    - Dopo stint 2 (idx 1): solo i 2-stop fanno pit
    - Dopo stint 3 (idx 2): nessun pit (fine gara) */
+   /* v35: l'AI rivaluta la mescola per lo stint successivo ad ogni pit stop.
+   Prima la strategia era lockata al via; ora risponde a meteo, wear,
+   tipo pista e posizione in classifica. Il player non è gestito qui. */
+function chooseAICompoundForNextStint(r, nextStintIdx, L) {
+  const newWeather = S.weather.name;
+  const circuit = CALENDAR[S.round];
+
+  /* Meteo attuale ha priorità assoluta */
+  if (newWeather === 'Pioggia')   return 'wet';
+  if (newWeather === 'Variabile') return 'inter';
+
+  const team = teamById(r.teamId);
+  const aggression = team ? (AI_AGGRESSION[team.id] ?? 0.5) : 0.5;
+
+  /* Giri totali rimanenti da qui in poi */
+  const stints = getRaceStints();
+  const totalLapsRemaining = stints
+    .slice(nextStintIdx)
+    .reduce((s, st) => s + (st.lapTo - st.lapFrom + 1), 0);
+
+  /* Sprint finale: team aggressivi montano soft per attaccare */
+  if (totalLapsRemaining < 15 && aggression > 0.6) return 'soft';
+
+  const roll = rng();
+
+  if (circuit.type === 'twisty') {
+    return roll < aggression * 0.6 ? 'soft' : 'medium';
+  }
+  if (circuit.type === 'power') {
+    if (roll < aggression * 0.3) return 'soft';
+    return rng() < 0.6 ? 'medium' : 'hard';
+  }
+  /* Balanced */
+  if (roll < aggression * 0.5) return 'soft';
+  if (roll < 0.8)                return 'medium';
+  return 'hard';
+}
 function applyPitStop(L, stintDoneIdx) {
   if (stintDoneIdx >= getRaceStints().length - 1) return;
 
@@ -7725,12 +7831,31 @@ function applyPitStop(L, stintDoneIdx) {
     r.wear = Math.max(0, r.wear * PIT_WEAR_RESET);
     r.lastPitBreakdown = breakdown;
 
-    // v31: reset termico gomme
+      // v31: reset termico gomme
     const ambientPit = Number.isFinite(S.asphaltTemp) ? S.asphaltTemp : REF_ASPHALT_TEMP;
     r.tempTyre = clamp(
       Math.round(r.tempTyre * 0.55 + ambientPit * TYRE_TEMP_START_FACTOR * 0.45),
       TYRE_TEMP_MIN, TYRE_TEMP_MAX
     );
+
+    /* v35: marca il pit al boundary per evitare doppi pit se subito dopo
+       scatta un cambio meteo (che è gestito da applyWeatherChange). */
+    r.lastPitStint = stintDoneIdx;
+
+    /* v35: AI rivaluta il compound per lo stint successivo. */
+    const nextStintIdx = stintDoneIdx + 1;
+    if (nextStintIdx < getRaceStints().length && Array.isArray(r.stintCompounds)) {
+      if (!d.isPlayer) {
+        const planned     = r.stintCompounds[nextStintIdx];
+        const plannedWet  = (planned === 'wet' || planned === 'inter');
+        const currentWet  = (S.weather.name !== 'Asciutto');
+        const weatherMismatch = plannedWet !== currentWet;
+        /* Rivaluta se il meteo è cambiato di categoria, o 15% di varietà */
+        if (weatherMismatch || rng() < 0.15) {
+          r.stintCompounds[nextStintIdx] = chooseAICompoundForNextStint(r, nextStintIdx, L);
+        }
+      }
+    }
 
     pittedThisStint.add(d.teamId);
 
@@ -7843,11 +7968,13 @@ let wearDelta = mode.wear * wearMultFor(d) * cEff.wearMult * (r.tempWearMult || 
     r.wear = clamp(r.wear + wearDelta, 0, 100);
     if (r.wear > WEAR_PENALTY_START) inc -= (r.wear - WEAR_PENALTY_START) * WEAR_PENALTY_SLOPE;
 
-    let roll = rnd(-amp, amp);
+      let roll = rnd(-amp, amp);
     if (d.isPlayer) {
       const negScale = clamp(1 - (d.consistency - 50) * SIM_TUNING.raceNegScaleConsistency,
                              SIM_TUNING.raceNegScaleMin, SIM_TUNING.raceNegScaleMax);
       if (roll < 0) roll *= negScale;
+      /* v35: compensa il bias positivo dell'asimmetria, così E[roll] = 0 */
+      if (negScale < 1) roll -= amp * (1 - negScale) / 4;
     }
     inc += roll * w.chaos * r.chaosScale;
     r.sc += inc;
@@ -8068,12 +8195,8 @@ function afterStintAdvance(L) {
   L.pending = maybeTeamOrders(L) ? 'orders' : 'pace';
 }
 /* v33: applica il cambio meteo e aggiorna i compound di conseguenza.
-   choice: 'adapt' (pit per compound giusto) o 'stay' (continua con compound attuale) */
-/* v34 fix: cambio meteo differenziato per team.
-   - Il player decide tramite `choice` ('adapt' | 'stay').
-   - Gli AI decidono tramite un modello probabilistico che combina:
-     aggressione del team, mescola attuale, wear, giri rimanenti nello stint.
-   Il compound di ogni pilota viene aggiornato solo se pitta. */
+   choice: 'adapt' (pit per compound giusto) o 'stay' (continua con compound attuale)
+   v35: il player che resta fuori ora paga lo stesso malus degli AI. */
 function applyWeatherChange(L, choice) {
   const forecast = L.weatherForecast[L.stint];
   if (!forecast || !forecast.willChange) return;
@@ -8099,11 +8222,20 @@ function applyWeatherChange(L, choice) {
                       : newWeatherName === 'Variabile' ? 'inter'
                       : 'medium';
 
+  /* v35: malus una-tantum per chi resta fuori con mescola sbagliata.
+     Il malus continuativo arriva poi da compoundEffect() nello stint successivo. */
+  const stayOutKick = (currentCompound) => {
+    const table = COMPOUND_WEATHER_BONUS[currentCompound] || {};
+    const ongoing = table[newWeatherName] || 0;
+    return Math.min(0, ongoing) * 0.5;   // 50% del malus continuativo
+  };
+
   L.rows.forEach(r => {
     if (r.dnf) return;
     const d = driverById(r.id);
+    const currentCompound = (r.stintCompounds && r.stintCompounds[L.stint]) || 'medium';
 
-    /* === Player: obbedisce alla scelta dell'utente === */
+    /* === PLAYER === */
     if (d.isPlayer) {
       if (choice === 'adapt') {
         const team = teamById(S.player.teamId);
@@ -8119,39 +8251,33 @@ function applyWeatherChange(L, choice) {
           Math.round(r.tempTyre * 0.55 + newAmbient * TYRE_TEMP_START_FACTOR * 0.45),
           TYRE_TEMP_MIN, TYRE_TEMP_MAX
         );
-
         L.log.push({ lap, type: 'info', text: t('rrace.weather_pit_adapt') });
       } else {
+        /* v35: stessa penalità degli AI che restano fuori */
+        r.sc += stayOutKick(currentCompound);
         L.log.push({ lap, type: 'warn', text: t('rrace.weather_stay_out') });
       }
       return;
     }
 
-    /* === AI: decisione probabilistica === */
+    /* === AI === */
+    /* v35: se ha già pitato al boundary dello stint precedente, non pita di nuovo */
+    if (r.lastPitStint === L.stint - 1) return;
+
     const team = teamById(r.teamId);
     const aggression = AI_AGGRESSION[team.id] ?? 0.5;
-
-    /* Mescola attuale dell'AI in questo stint */
-    const currentCompound = (r.stintCompounds && r.stintCompounds[L.stint]) || 'medium';
 
     /* Se è già sul compound corretto → non pitta quasi mai */
     if (currentCompound === targetCompound) {
       if (rng() < 0.10) { /* raro pit di scrupolo */ }
-      else return;        /* resta fuori */
+      else return;
     }
 
-    /* Probabilità base: aggressione del team × urgenza della mescola */
     let pPit = aggression * 0.75;
-
-    /* Se ha gomme finite, pitare è più probabile (deve comunque rientrare) */
     if (r.wear > 60) pPit += 0.20;
     if (r.wear > 80) pPit += 0.15;
-
-    /* Se restano pochi giri, tende a stare fuori ("tanto vale finire") */
     if (lapsRemaining <= 4) pPit -= 0.40;
     else if (lapsRemaining <= 8) pPit -= 0.15;
-
-    /* Meteo estremo (pioggia battente) → più disciplina, tutti rientrano */
     if (newWeatherName === 'Pioggia' && currentCompound !== 'wet') pPit += 0.25;
 
     pPit = clamp(pPit, 0.05, 0.95);
@@ -8161,7 +8287,8 @@ function applyWeatherChange(L, choice) {
       r.sc -= pitLossSc + WEATHER_PIT_COST;
       r.wear = Math.max(0, r.wear * PIT_WEAR_RESET);
       r.pitStops = (r.pitStops || 0) + 1;
-	    r.scPitStint = L.stint;
+      r.scPitStint = L.stint;
+      r.lastPitStint = L.stint;   // v35: marca intra-stint
       r.stintCompounds[L.stint] = targetCompound;
 
       const ambientPit = Number.isFinite(S.asphaltTemp) ? S.asphaltTemp : REF_ASPHALT_TEMP;
@@ -8171,10 +8298,8 @@ function applyWeatherChange(L, choice) {
         TYRE_TEMP_MIN, TYRE_TEMP_MAX
       );
     } else {
-      /* Resta fuori: se il meteo peggiora e ha la mescola sbagliata, paga un malus di passo */
-      if (newWeatherName === 'Pioggia' && currentCompound !== 'wet') {
-        r.sc -= 1.5;   /* sc persi per restare su slick sul bagnato */
-      }
+      /* v35: stesso kick del player */
+      r.sc += stayOutKick(currentCompound);
     }
   });
 
@@ -8273,8 +8398,7 @@ function finalizeRace(L) {
   S.lastSafetyCar = safetyCar;
   const flRow = S.lastRace.find(r => r.fl);
   S.lastFastestLap = flRow ? { id: flRow.id, awarded: !!(FASTEST_LAP_POINT && flRow.pos && flRow.pos <= 10) } : null;
-
-  const me = S.lastRace.find(r => r.id === 'PLAYER');
+    const me = S.lastRace.find(r => r.id === 'PLAYER');
   const race = CALENDAR[S.round];
   const rival = rivalDriver();
   S.seasonLog.push({
@@ -8282,6 +8406,36 @@ function finalizeRace(L) {
     dnf: me.dnf, weather: w.name, sc: safetyCar, strat: me.strat, fl: !!me.fl,
     cum: S.player.pts, leader: Math.max(...S.drivers.map(d => d.pts)), rival: rival ? rival.pts : null
   });
+
+  /* v36: genera il titolo di giornale di questo GP */
+  try {
+    const standings = driverStandings();
+    const myIdxNow = standings.findIndex(d => d.isPlayer);
+    const nowPos = myIdxNow >= 0 ? myIdxNow + 1 : null;
+
+    const prevPosSnap    = S._prevChampionshipPos;
+    const leaderBefore   = prevPosSnap === 1;
+    const wasChampBefore = !!S._wasChampion;
+    const nowChamp       = nowPos === 1 && isPlayerChampionClinched();
+
+    const headline = generateHeadline(me, rival, {
+      prevPos: prevPosSnap,
+      nowPos,
+      wasChampion: wasChampBefore,
+      nowChampion: nowChamp,
+      careerWins: S.totals.wins,
+      isChampionshipLeader: nowPos === 1,
+      wasChampionshipLeader: leaderBefore
+    });
+
+    if (nowChamp && !wasChampBefore) S._wasChampion = true;
+
+    const lastLog = S.seasonLog[S.seasonLog.length - 1];
+    if (lastLog) lastLog.headline = headline;
+    S.lastHeadline = headline;
+  } catch (e) {
+    console.warn('Headline generation failed:', e);
+  }
 
   S.totals.races++;
   S.totals.points += me.points;
@@ -8301,6 +8455,12 @@ function finalizeRace(L) {
   }
   if (me.pos === 1) cs.wins++;
   if (me.pos && me.pos <= 3) cs.podiums++;
+
+  /* v36: snapshot per il generatore di titoli */
+  S._prevChampionshipPos = (() => {
+    const idx = driverStandings().findIndex(d => d.isPlayer);
+    return idx >= 0 ? idx + 1 : null;
+  })();
 
   /* aggiorna rivalità PRIMA di S.round++ */
   updateRivalryAfterRace(S.lastRace);
@@ -9371,11 +9531,17 @@ function viewMarket() {
       <span class="text-lg font-black text-gold">${S.reputation}/100</span>
     </div>
 
-       <div class="space-y-3">
+        <div class="space-y-3">
       ${offers.length === 0 ? `
-           <div class="bg-carbon2 rounded-2xl p-6 neon-soft text-center text-slate-400 text-sm">
-        ${esc(t('market.no_offers'))}
-      </div>` : offers.map((o, i) => {
+      <div class="bg-carbon2 rounded-2xl p-6 neon-soft text-center mb-4">
+        <div class="text-4xl mb-3">🏁</div>
+        <div class="font-black text-lg mb-2">${esc(t('market.no_offers'))}</div>
+        <p class="text-slate-400 text-sm leading-relaxed">${esc(t('market.no_offers_desc'))}</p>
+      </div>
+      <button type="button" data-action="market-career-end"
+        class="w-full py-5 rounded-2xl bg-racing neon font-black text-lg active:scale-[.98] transition">
+        ${esc(t('market.retire_btn'))}
+      </button>` : offers.map((o, i) => {
         const team = teamById(o.teamId);
         if (!team) return '';   // difesa extra: offerta orfana
         return `
@@ -9390,11 +9556,12 @@ function viewMarket() {
             ${o.teamId === p.teamId ? `<span class="text-[10px] px-2 py-1 rounded-full bg-carbon3 text-slate-400">${esc(t('market.current'))}</span>` : ''}
           </div>
           ${bar(t('market.expected_car'), Math.round(team.car), team.color)}
-        </button>`;
+               </button>`;
       }).join('')}
     </div>
   </div>`;
 }
+
 function viewRivalSwitch() {
   const p = S.player;
   const oldRival = rivalDriver();
@@ -9633,7 +9800,18 @@ function teamStandings() {
     return { ...t, pts: ds.reduce((s, d) => s + d.pts, 0), drivers: ds, fin };
   }).sort((a, b) => b.pts - a.pts || countback(a, b));
 }
-
+/* v36: true se il player ha già matematicamente vinto il titolo dopo questa gara */
+function isPlayerChampionClinched() {
+  const ds = driverStandings();
+  const me = ds.find(d => d.isPlayer);
+  if (!me) return false;
+  const racesLeft = CALENDAR.length - S.round - 1;   // -1: la gara corrente è finita
+  if (racesLeft <= 0) return true;                    // ultima gara → già chiuso
+  const maxPtsRemaining = racesLeft * 26;             /* 25 + 1 FL */
+  const second = ds.find(d => !d.isPlayer);
+  if (!second) return true;
+  return (me.pts - second.pts) > maxPtsRemaining;
+}
 function playerPos() {
   if (!S || !S.drivers || !S.drivers.length) return '—';
   const idx = driverStandings().findIndex(d => d.isPlayer);
@@ -9654,7 +9832,331 @@ function traitBonus(trait, phase, weatherName, circuitType) {
     default:       return 0;
   }
 }
+/* =========================================================================
+   ===================== PADDOCK NEWS (v36) ================================
+   Genera titoli di giornale contestuali dopo ogni gara.
+   - Una testata fittizia per lingua
+   - Template per categoria con priorità (eventi speciali > standard)
+   - Anti-ripetizione: mai due titoli identici consecutivi
+   ========================================================================= */
 
+const NEWS_PRESS = {
+  it: { name: 'Il Paddock',     tag: 'IN PRIMA PAGINA', date: 'Edizione odierna' },
+  en: { name: 'The Paddock',    tag: 'BREAKING NEWS',   date: 'Today\'s edition' }
+};
+
+/* Categorie in ordine di priorità (le prime vinte) */
+const HEADLINE_CATEGORIES = [
+  'careerFirstWin',    // prima vittoria in carriera del pilota (giocatore)
+  'championWon',       // titolo mondiale matematico dopo questa gara
+  'titleFavourite',    // allunga in testa al mondiale
+  'comebackPodium',    // podio partendo da P10 o oltre
+  'dominantWin',       // vittoria con gap > 15s
+  'closeWin',          // vittoria con gap < 2s
+  'win',               // vittoria standard
+  'podium',            // P2-P3
+  'rivalWon',          // batte il rivale di > 3 pos
+  'rivalLost',         // perde vs il rivale di > 3 pos
+  'dnf',               // ritiro
+  'collapse',          // perde > 10 pos, arriva al traguardo
+  'comeback',          // guadagna > 8 pos, arriva al traguardo (non podio)
+  'points',            // P4-P10
+  'noPoints',          // P11-P15
+  'last'               // P16-P22
+];
+
+const HEADLINE_TEMPLATES = {
+  it: {
+    careerFirstWin: [
+      { t: "La prima volta non si scorda mai: {name} vince a {gp}", s: "Una giornata che entra nella storia del pilota e del team.", tone: 'dramatic' },
+      { t: "È arrivata: {name} conquista la prima vittoria in carriera", s: "Applausi a scena aperta nel paddock. Il futuro è adesso.", tone: 'dramatic' }
+    ],
+    championWon: [
+      { t: "{name} è Campione del Mondo!", s: "Titolo matematico conquistato a {gp}. Un'annata dominata.", tone: 'dramatic' },
+      { t: "Mondiale chiuso: {name} sul tetto del mondo", s: "Nessuno ha potuto nulla contro un pilota in stato di grazia.", tone: 'dramatic' }
+    ],
+    titleFavourite: [
+      { t: "{name} allunga in vetta al Mondiale", s: "Vittoria pesante a {gp}. La classifica parla chiaro.", tone: 'good' },
+      { t: "Fuga iridata: {name} scappa dopo {gp}", s: "Il margine cresce e gli avversari iniziano a temere il peggio.", tone: 'good' }
+    ],
+    comebackPodium: [
+      { t: "Impresa a {gp}: {name} dal fondo al podio", s: "Rimonta leggendaria. Una gara che vale una stagione.", tone: 'good' },
+      { t: "{name} scrive la storia: P{pos} partendo da P{grid}", s: "Pilota e team perfetti in una domenica da incorniciare.", tone: 'good' }
+    ],
+    dominantWin: [
+      { t: "{name} umilia la concorrenza a {gp}", s: "Il margine finale ({gap}s) è un manifesto. Nessuno può avvicinarsi.", tone: 'good' },
+      { t: "Supremazia pura: {name} domina dall'inizio alla fine", s: "Gara mai in discussione. La concorrenza guarda da lontano.", tone: 'good' },
+      { t: "{name} firma un capolavoro a {gp}", s: "Pole, vittoria e giro veloce. Weekend perfetto.", tone: 'good' }
+    ],
+    closeWin: [
+      { t: "Fotofinish a {gp}: {name} vince per {gap}s!", s: "Ultimi giri al cardiopalma. L'unghia è dalla parte giusta.", tone: 'good' },
+      { t: "{name} resiste e vince. Che battaglia!", s: "Pressione fino alla bandiera a scacchi. Nervi d'acciaio.", tone: 'good' }
+    ],
+    win: [
+      { t: "{name} vince a {gp}", s: "Gara solida e gestita con autorità. La vittoria è meritata.", tone: 'good' },
+      { t: "Vittoria per {name}: {gp} si tinge dei suoi colori", s: "Strategia impeccabile e passo gara superbo.", tone: 'good' },
+      { t: "{name} alza le braccia al cielo di {gp}", s: "Il team festeggia, gli avversari prendono appunti.", tone: 'good' }
+    ],
+    podium: [
+      { t: "P{n} a {gp}: {name} sale di nuovo sul podio", s: "Prova convincente e podio meritato. Il momentum continua.", tone: 'good' },
+      { t: "{name} chiude al terzo posto sotto il sole di {gp}", s: "Punti pesanti e morale alle stelle.", tone: 'good' },
+      { t: "Podio per {name}: che risposta a {gp}", s: "Weekend da protagonista dall'inizio alla fine.", tone: 'good' }
+    ],
+    rivalWon: [
+      { t: "Duello acceso: {name} batte {rival} a {gp}", s: "P{pos} contro P{rpos}. Il vantaggio nel testa a testa cresce.", tone: 'good' },
+      { t: "Rivincita! {name} supera {rival} a {gp}", s: "La rivalità si accende. Il confronto diretto premia {name}.", tone: 'good' }
+    ],
+    rivalLost: [
+      { t: "{rival} la spunta su {name} a {gp}", s: "P{rpos} contro P{pos}. Il duello si fa più complicato.", tone: 'bad' },
+      { t: "Sconfitta amara: {name} cede a {rival} in {gp}", s: "Il confronto diretto lascia strascichi. Serve una reazione.", tone: 'bad' }
+    ],
+    dnf: [
+      { t: "Weekend da dimenticare: {name} costretto al ritiro a {gp}", s: "Problema tecnico e zero punti. Testa al prossimo appuntamento.", tone: 'bad' },
+      { t: "{name} fuori dai giochi: {gp} finisce anzitempo", s: "Il team analizzerà i dati. Serve una risposta immediata.", tone: 'bad' },
+      { t: "Domenica nera per {name} a {gp}", s: "Ritiro anticipato e morale sotto i tacchi. Solo da ricostruire.", tone: 'bad' }
+    ],
+    collapse: [
+      { t: "Caduta libera: {name} da P{grid} a P{pos} a {gp}", s: "Gara complicata dal primo giro. Il passo non c'è stato mai.", tone: 'bad' },
+      { t: "{name} scivola indietro: che disastro a {gp}", s: "Strategia sbagliata e gomme finite. Lezione da imparare.", tone: 'bad' }
+    ],
+    comeback: [
+      { t: "Rimonta da applausi per {name}: da P{grid} a P{pos}", s: "Una gara aggressiva e intelligente. Il team è entusiasta.", tone: 'good' },
+      { t: "{name} risale la china a {gp}", s: "Sorpassi puliti e strategia vincente: che domenica!", tone: 'good' }
+    ],
+    points: [
+      { t: "{name} porta a casa punti preziosi a {gp}", s: "P{pos} finale: una domenica solida e senza sbavature.", tone: 'neutral' },
+      { t: "Zona punti per {name}: P{pos} a {gp}", s: "Buon lavoro del team. Il campionato continua a sorridere.", tone: 'neutral' }
+    ],
+    noPoints: [
+      { t: "Fuori dai punti: {name} chiude P{pos} a {gp}", s: "Gara in ombra. Il passo c'era, ma non è bastato.", tone: 'neutral' },
+      { t: "{name} manca la top 10 in {gp}", s: "Qualcosa non ha funzionato. Domani si torna in fabbrica.", tone: 'neutral' }
+    ],
+    last: [
+      { t: "{name} chiude in coda: P{pos} a {gp}", s: "Una domenica da dimenticare. Il team cerca risposte.", tone: 'bad' },
+      { t: "Weekend in salita: {name} termina P{pos} in {gp}", s: "Tanto lavoro da fare. Il potenziale c'è, va tirato fuori.", tone: 'bad' }
+    ]
+  },
+  en: {
+    careerFirstWin: [
+      { t: "First time is forever: {name} wins at {gp}", s: "A day that goes down in the driver's and team's history.", tone: 'dramatic' },
+      { t: "It's happened: {name} takes first career win", s: "Applause rings out across the paddock. The future is now.", tone: 'dramatic' }
+    ],
+    championWon: [
+      { t: "{name} is World Champion!", s: "Title sealed at {gp}. A season utterly dominated.", tone: 'dramatic' },
+      { t: "Championship closed: {name} on top of the world", s: "Nobody could touch a driver in a state of grace.", tone: 'dramatic' }
+    ],
+    titleFavourite: [
+      { t: "{name} extends championship lead", s: "Heavy win at {gp}. The standings speak for themselves.", tone: 'good' },
+      { t: "Title breakaway: {name} pulls clear after {gp}", s: "The margin grows and rivals start to worry.", tone: 'good' }
+    ],
+    comebackPodium: [
+      { t: "Brilliant at {gp}: {name} from the back to the podium", s: "Legendary comeback. A race worth a season.", tone: 'good' },
+      { t: "{name} makes history: P{pos} from P{grid}", s: "Driver and team perfect on a Sunday to remember.", tone: 'good' }
+    ],
+    dominantWin: [
+      { t: "{name} humiliates the field at {gp}", s: "The final margin ({gap}s) says it all. Untouchable.", tone: 'good' },
+      { t: "Pure dominance: {name} from lights to flag", s: "A race never in doubt. The field watches from afar.", tone: 'good' },
+      { t: "{name} signs a masterpiece at {gp}", s: "Pole, win and fastest lap. A perfect weekend.", tone: 'good' }
+    ],
+    closeWin: [
+      { t: "Photo finish at {gp}: {name} wins by {gap}s!", s: "Final laps on the edge. The coin landed the right way.", tone: 'good' },
+      { t: "{name} holds on and wins. What a battle!", s: "Pressure until the chequered flag. Nerves of steel.", tone: 'good' }
+    ],
+    win: [
+      { t: "{name} wins at {gp}", s: "A solid, authoritative drive. The win is fully deserved.", tone: 'good' },
+      { t: "Victory for {name}: {gp} wears his colours", s: "Flawless strategy and superb race pace.", tone: 'good' },
+      { t: "{name} raises his arms to the {gp} sky", s: "The team celebrates, rivals take notes.", tone: 'good' }
+    ],
+    podium: [
+      { t: "P{n} at {gp}: {name} back on the podium", s: "A convincing drive and a deserved podium. Momentum builds.", tone: 'good' },
+      { t: "{name} finishes third under the {gp} sun", s: "Heavy points and morale high.", tone: 'good' },
+      { t: "Podium for {name}: what a response at {gp}", s: "A weekend as a protagonist from start to finish.", tone: 'good' }
+    ],
+    rivalWon: [
+      { t: "Heated duel: {name} beats {rival} at {gp}", s: "P{pos} vs P{rpos}. The head-to-head gap grows.", tone: 'good' },
+      { t: "Payback! {name} gets past {rival} at {gp}", s: "The rivalry ignites. The direct battle rewards {name}.", tone: 'good' }
+    ],
+    rivalLost: [
+      { t: "{rival} gets the better of {name} at {gp}", s: "P{rpos} vs P{pos}. The duel gets harder.", tone: 'bad' },
+      { t: "Bitter defeat: {name} yields to {rival} in {gp}", s: "The head-to-head leaves scars. A response is needed.", tone: 'bad' }
+    ],
+    dnf: [
+      { t: "Weekend to forget: {name} forced to retire at {gp}", s: "Technical issue and zero points. Eyes on the next round.", tone: 'bad' },
+      { t: "{name} out of the running: {gp} ends early", s: "The team will analyse the data. Immediate response required.", tone: 'bad' },
+      { t: "Black Sunday for {name} at {gp}", s: "Early retirement and morale on the floor. Rebuild from here.", tone: 'bad' }
+    ],
+    collapse: [
+      { t: "Free fall: {name} from P{grid} to P{pos} at {gp}", s: "A race compromised from lap 1. The pace never showed up.", tone: 'bad' },
+      { t: "{name} slides backwards: what a mess at {gp}", s: "Wrong strategy and worn tyres. A lesson to learn.", tone: 'bad' }
+    ],
+    comeback: [
+      { t: "Comeback applauded for {name}: from P{grid} to P{pos}", s: "An aggressive, clever drive. The team is thrilled.", tone: 'good' },
+      { t: "{name} climbs back at {gp}", s: "Clean overtakes and winning strategy: what a Sunday!", tone: 'good' }
+    ],
+    points: [
+      { t: "{name} banks precious points at {gp}", s: "P{pos} final: a solid, spotless Sunday.", tone: 'neutral' },
+      { t: "Points zone for {name}: P{pos} at {gp}", s: "Good work from the team. The championship keeps smiling.", tone: 'neutral' }
+    ],
+    noPoints: [
+      { t: "Outside the points: {name} finishes P{pos} at {gp}", s: "A race in the shadows. The pace was there, it just wasn't enough.", tone: 'neutral' },
+      { t: "{name} misses the top 10 in {gp}", s: "Something didn't work. Back to the factory tomorrow.", tone: 'neutral' }
+    ],
+    last: [
+      { t: "{name} finishes at the back: P{pos} at {gp}", s: "A Sunday to forget. The team looks for answers.", tone: 'bad' },
+      { t: "Tough weekend: {name} ends P{pos} in {gp}", s: "Lots of work to do. The potential is there, it needs unlocking.", tone: 'bad' }
+    ]
+  }
+};
+
+/* --- Interpolazione semplice con fallback silenzioso --- */
+function _interpHeadline(str, vars) {
+  if (str == null) return '';
+  return String(str).replace(/\{(\w+)\}/g, (_, k) => {
+    const v = vars[k];
+    return v == null ? '' : String(v);
+  });
+}
+
+/* --- Classificazione dell'esito (ritorna la categoria a priorità più alta) --- */
+function classifyRaceOutcome(me, rival, ctx) {
+  if (!me) return { category: 'noPoints', tone: 'neutral' };
+
+  /* Dati di contesto */
+  const prevPos     = ctx.prevPos;         // posizione in campionato PRIMA di questa gara
+  const nowPos      = ctx.nowPos;          // posizione in campionato DOPO
+  const wasChampion = !!ctx.wasChampion;   // era già campione prima
+  const nowChampion = !!ctx.nowChampion;   // è campione ora
+  const isFirstWin  = me.pos === 1 && ctx.careerWins === 1;
+  const grid        = me.grid || 20;
+  const pos         = me.pos;
+  const gap         = me.gap || 0;
+  const leadNow     = ctx.isChampionshipLeader;
+  const leadBefore  = ctx.wasChampionshipLeader;
+
+  /* 1. Prima vittoria in carriera */
+  if (isFirstWin) return { category: 'careerFirstWin', tone: 'dramatic' };
+
+  /* 2. Titolo mondiale matematico (solo se non era già campione) */
+  if (nowChampion && !wasChampion) return { category: 'championWon', tone: 'dramatic' };
+
+  /* 3. Allunga in testa al mondiale (leader ora, non lo era prima, e non ha appena vinto il titolo) */
+  if (leadNow && !leadBefore && nowPos === 1) return { category: 'titleFavourite', tone: 'good' };
+
+  /* 4. Podio da P10+ */
+  if (pos && pos <= 3 && grid >= 10) return { category: 'comebackPodium', tone: 'good' };
+
+  /* 5. Vittoria dominante */
+  if (pos === 1 && gap >= 15) return { category: 'dominantWin', tone: 'good' };
+
+  /* 6. Fotofinish */
+  if (pos === 1 && gap < 2) return { category: 'closeWin', tone: 'good' };
+
+  /* 7. Vittoria standard */
+  if (pos === 1) return { category: 'win', tone: 'good' };
+
+  /* 8. Podio */
+  if (pos && pos <= 3) return { category: 'podium', tone: 'good' };
+
+  /* 9/10. Confronto diretto col rivale */
+  if (rival && !me.dnf && !rival.dnf && pos && rival.pos) {
+    if (pos < rival.pos - 3) return { category: 'rivalWon', tone: 'good' };
+    if (pos > rival.pos + 3) return { category: 'rivalLost', tone: 'bad' };
+  }
+
+  /* 11. Ritiro */
+  if (me.dnf) return { category: 'dnf', tone: 'bad' };
+
+  /* 12. Caduta libera (perde > 10 pos) */
+  if (pos && grid - pos <= -10) return { category: 'collapse', tone: 'bad' };
+
+  /* 13. Rimonta (guadagna > 8 pos, fuori dal podio) */
+  if (pos && grid - pos >= 8) return { category: 'comeback', tone: 'good' };
+
+  /* 14. Zona punti */
+  if (pos && pos <= 10) return { category: 'points', tone: 'neutral' };
+
+  /* 15. Fuori punti ma non ultimo */
+  if (pos && pos <= 15) return { category: 'noPoints', tone: 'neutral' };
+
+  /* 16. Ultimo gruppo */
+  return { category: 'last', tone: 'bad' };
+}
+
+/* --- Pick del template con anti-ripetizione --- */
+function pickHeadlineTemplate(lang, category, lastIdx) {
+  const dict = HEADLINE_TEMPLATES[lang] || HEADLINE_TEMPLATES.it;
+  const pool = dict[category] || dict.points;   // fallback
+  if (!Array.isArray(pool) || pool.length === 0) return { idx: 0, tpl: { t: '', s: '', tone: 'neutral' } };
+
+  /* Anti-repeat: se l'ultimo indice usato per questa categoria è X, ne scelgo uno diverso */
+  let idx = irnd(0, pool.length - 1);
+  if (pool.length > 1 && idx === lastIdx) {
+    idx = (idx + 1) % pool.length;
+  }
+  return { idx, tpl: pool[idx] };
+}
+
+/* --- Generatore principale --- */
+function generateHeadline(me, rival, ctx) {
+  const lang = currentLang();
+  const cls = classifyRaceOutcome(me, rival, ctx);
+  const lastByCat = (S._headlineLastIdx && S._headlineLastIdx[cls.category]) ?? -1;
+  const { idx, tpl } = pickHeadlineTemplate(lang, cls.category, lastByCat);
+
+   const vars = {
+    name: S.player.last || S.player.name,
+    gp: (CALENDAR[S.round] && CALENDAR[S.round].gp) || '',
+    pos: me.pos || '-',
+    grid: me.grid || '-',
+    gap: (me.gap || 0).toFixed(3),
+    rival: rival ? (rival.last || rival.name) : '—',
+    rpos: rival && rival.pos ? rival.pos : '-'
+  };
+  /* Salva l'ultimo indice per categoria (anti-repeat) */
+  if (!S._headlineLastIdx) S._headlineLastIdx = {};
+  S._headlineLastIdx[cls.category] = idx;
+
+  return {
+    category: cls.category,
+    tone: tpl.tone || cls.tone,
+    title: _interpHeadline(tpl.t, vars),   // fallback per save legacy
+    sub:   _interpHeadline(tpl.s, vars),   // fallback per save legacy
+    idx,
+    vars,
+    press: NEWS_PRESS[lang] || NEWS_PRESS.it,
+    year:  S.year,
+    round: S.round,
+    gp:    vars.gp,
+    flag:  (CALENDAR[S.round] && CALENDAR[S.round].flag) || '🏁'
+  };
+}
+/* v36.1: risolve il testo della headline nella lingua corrente.
+   - Se ha idx+vars (formato v36.1+), re-interpola al volo → cambio lingua immediato.
+   - Se ha solo title+sub (formato legacy), restituisce quelli (nessun re-render). */
+function resolveHeadlineText(h) {
+  if (!h) return null;
+  const lang = currentLang();
+
+  if (Number.isInteger(h.idx) && h.vars) {
+    const dict = HEADLINE_TEMPLATES[lang] || HEADLINE_TEMPLATES.it;
+    const pool = dict[h.category] || dict.points;
+    const tpl  = pool[h.idx] || pool[0];
+    return {
+      title: _interpHeadline(tpl.t, h.vars),
+      sub:   _interpHeadline(tpl.s, h.vars),
+      press: NEWS_PRESS[lang] || NEWS_PRESS.it,
+      tone:  tpl.tone || h.tone || 'neutral'
+    };
+  }
+
+  // Fallback legacy
+  return {
+    title: h.title || '',
+    sub:   h.sub   || '',
+    press: h.press || (NEWS_PRESS[lang] || NEWS_PRESS.it),
+    tone:  h.tone  || 'neutral'
+  };
+}
 function basePace(d) {
   const car = teamById(d.teamId).car;
   const circuit = CALENDAR[S.round];
@@ -10137,14 +10639,14 @@ test('v33: applyWeatherChange(stay) non cambia compound', () => {
     simQualifying();
     S.raceLive = buildRaceLive();
     const L = S.raceLive;
-    // Forzo un cambio meteo allo stint 1
     L.weatherForecast[1] = { stint: 1, willChange: true, from: 'Asciutto', to: 'Pioggia' };
     L.stint = 1;
     const me = L.rows.find(r => r.id === 'PLAYER');
-    const scBefore = me.sc;
+    const compoundBefore = me.stintCompounds[1];
     applyWeatherChange(L, 'stay');
     assertEq(S.weather.name, 'Pioggia', 'il meteo non è cambiato');
-    assertEq(me.sc, scBefore, 'stay non deve costare sc');
+    /* v35: stay mantiene il compound ma il player paga il kick (vedi test v35) */
+    assertEq(me.stintCompounds[1], compoundBefore, 'stay non deve cambiare compound');
     assertEq(me.pitStops || 0, 0, 'stay non deve incrementare pitStops');
   });
 });
@@ -10698,7 +11200,84 @@ test('v31 thermal: gomma in finestra ottimale è neutrale', () => {
   assertEq(eff.wearMult, 1);
   assertEq(eff.paceMod, 0);
 });
+test('v35: weather mismatch colpisce player e AI simmetricamente', () => {
+  withTestState(() => {
+    simQualifying();
+    S.raceLive = buildRaceLive();
+    const L = S.raceLive;
 
+    /* Forzo tutti su dry compound, poi Pioggia */
+    L.rows.forEach(r => { r.stintCompounds = ['hard', 'hard', 'hard']; });
+    L.weatherForecast[1] = { stint: 1, willChange: true, from: 'Asciutto', to: 'Pioggia' };
+    L.stint = 1;
+
+    const me = L.rows.find(r => r.id === 'PLAYER');
+    const aiSample = L.rows.filter(r => r.id !== 'PLAYER' && !r.dnf)[0];
+
+    const meScBefore  = me.sc;
+    const aiScBefore  = aiSample.sc;
+
+    /* Forzo il player a restare fuori */
+    applyWeatherChange(L, 'stay');
+
+    const meLoss = meScBefore - me.sc;
+
+    /* Il player deve perdere sc. L'AI può pitare o restare fuori,
+       ma se resta fuori deve perdere lo stesso kick del player. */
+    assert(meLoss >= 2.0, 'player stay-out deve perdere sc, ha perso: ' + meLoss);
+  });
+});
+
+test('v35: consistency alta non aumenta E[roll] in gara', () => {
+  /* Con la compensazione, campionando molti roll la media deve essere ~0
+     per consistency 90 e leggermente negativa per consistency 30. */
+  function sampleMean(consistency, N) {
+    const d = { isPlayer: true, consistency, teamId: 'mer' };
+    const amp = SIM_TUNING.raceNoise * 0.5;
+    let sum = 0;
+    for (let i = 0; i < N; i++) {
+      let roll = rnd(-amp, amp);
+      const negScale = clamp(1 - (consistency - 50) * SIM_TUNING.raceNegScaleConsistency,
+                             SIM_TUNING.raceNegScaleMin, SIM_TUNING.raceNegScaleMax);
+      if (roll < 0) roll *= negScale;
+      if (negScale < 1) roll -= amp * (1 - negScale) / 4;
+      sum += roll;
+    }
+    return sum / N;
+  }
+  seedRng(1);
+  const meanHigh = sampleMean(90, 20000);
+  seedRng(1);
+  const meanLow  = sampleMean(30, 20000);
+
+  assert(Math.abs(meanHigh) < 0.05, 'cons 90 deve avere media ~0: ' + meanHigh);
+  assert(meanLow <= 0, 'cons 30 deve avere media ≤ 0: ' + meanLow);
+  assert(meanHigh > meanLow, 'cons 90 deve avere media > cons 30');
+});
+
+test('v35: AI re-evaluation cambia compound per il meteo', () => {
+  withTestState(() => {
+    S.round = 0;
+    const r = { id: 'ai1', teamId: 'fer' };
+    S.weather = WEATHER_DEFS.Pioggia;
+    const c = chooseAICompoundForNextStint(r, 1, {});
+    assertEq(c, 'wet', 'con Pioggia deve scegliere wet');
+    S.weather = WEATHER_DEFS.Variabile;
+    const c2 = chooseAICompoundForNextStint(r, 1, {});
+    assertEq(c2, 'inter', 'con Variabile deve scegliere inter');
+  });
+});
+
+test('v35: viewMarket senza offerte mostra il pulsante di chiusura', () => {
+  withTestState(() => {
+    S.offers = [];
+    const html = viewMarket();
+    assert(html.includes('market-career-end'),
+      'senza offerte deve comparire il pulsante di chiusura carriera');
+    assert(html.includes(t('market.retire_btn')),
+      'deve comparire il testo del pulsante di chiusura');
+  });
+});
 test('v31 thermal: updateTyreTemp converge all\'equilibrio previsto', () => {
   const row = { tempTyre: 40 };
   const ambient = 34;
@@ -10954,7 +11533,115 @@ test('countback: a pari punti vince chi ha più vittorie', () => {
     assert(st.indexOf(a) < st.indexOf(b), 'countback non rispettato');
   });
 });
+test('v36: generateHeadline riconosce la prima vittoria in carriera', () => {
+  withTestState(() => {
+    S.totals.wins = 0;
+    S.round = 1;   // simula "dopo gara 1"
+    const me = { id:'PLAYER', pos:1, dnf:false, grid:3, gap:5.2, points:25, fl:false };
+    const h = generateHeadline(me, null, {
+      prevPos: null, nowPos: 1, wasChampion: false, nowChampion: false,
+      careerWins: 1, isChampionshipLeader: true, wasChampionshipLeader: false
+    });
+    assertEq(h.category, 'careerFirstWin');
+    assertEq(h.tone, 'dramatic');
+    assert(h.title.length > 10, 'titolo troppo corto');
+  });
+});
 
+test('v36: generateHeadline riconosce il titolo mondiale', () => {
+  withTestState(() => {
+    S.round = CALENDAR.length;
+    const me = { id:'PLAYER', pos:1, dnf:false, grid:1, gap:8.0, points:25, fl:false };
+    const h = generateHeadline(me, null, {
+      prevPos: 1, nowPos: 1, wasChampion: false, nowChampion: true,
+      careerWins: 5, isChampionshipLeader: true, wasChampionshipLeader: true
+    });
+    assertEq(h.category, 'championWon');
+    assertEq(h.tone, 'dramatic');
+  });
+});
+
+test('v36: generateHeadline riconosce il DNF', () => {
+  withTestState(() => {
+    const me = { id:'PLAYER', pos:null, dnf:true, grid:4, gap:null, points:0, fl:false };
+    const h = generateHeadline(me, null, {
+      prevPos: 5, nowPos: 8, wasChampion: false, nowChampion: false,
+      careerWins: 3, isChampionshipLeader: false, wasChampionshipLeader: false
+    });
+    assertEq(h.category, 'dnf');
+    assertEq(h.tone, 'bad');
+  });
+});
+
+test('v36: generateHeadline sceglie rivalWon se batte il rivale di >3 pos', () => {
+  withTestState(() => {
+    S.round = 5;
+    const me = { id:'PLAYER', pos:4, dnf:false, grid:5, gap:12.0, points:12, fl:false };
+    const rival = { id:'ai1', pos:9, dnf:false, name:'Vandersteen', last:'Vandersteen' };
+    const h = generateHeadline(me, rival, {
+      prevPos: 6, nowPos: 5, wasChampion: false, nowChampion: false,
+      careerWins: 2, isChampionshipLeader: false, wasChampionshipLeader: false
+    });
+    assertEq(h.category, 'rivalWon');
+  });
+});
+
+test('v36: anti-ripetizione — stessa categoria non restituisce lo stesso indice 2 volte', () => {
+  withTestState(() => {
+    S._headlineLastIdx = {};
+    S.round = 3;
+    const me = { id:'PLAYER', pos:2, dnf:false, grid:2, gap:4.0, points:18, fl:false };
+    const ctx = { prevPos: 3, nowPos: 2, wasChampion:false, nowChampion:false,
+                  careerWins: 1, isChampionshipLeader:false, wasChampionshipLeader:false };
+    const h1 = generateHeadline(me, null, ctx);
+    const h2 = generateHeadline(me, null, ctx);
+    /* I titoli devono differire perché il pool per "podium" ha più elementi */
+    assert(h1.title !== h2.title, 'titoli identici consecutivi: ' + h1.title);
+  });
+});
+
+test('v36: generateHeadline interpola {name} e {gp} correttamente', () => {
+  withTestState(() => {
+    S.round = 4;
+    const me = { id:'PLAYER', pos:1, dnf:false, grid:1, gap:20.0, points:25, fl:false };
+    const h = generateHeadline(me, null, {
+      prevPos: 2, nowPos: 1, wasChampion:false, nowChampion:false,
+      careerWins: 3, isChampionshipLeader:true, wasChampionshipLeader:false
+    });
+    /* Il nome del player deve comparire nel titolo O nel sottotitolo */
+    const full = h.title + ' ' + h.sub;
+    assert(full.includes(S.player.last), 'manca {name} interpolato');
+    assert(!h.title.includes('{name}'), 'placeholder {name} non risolto');
+    assert(!h.title.includes('{gp}'),   'placeholder {gp} non risolto');
+  });
+});
+
+test('v36: ogni template IT ha un corrispettivo EN per la stessa categoria', () => {
+  const itKeys = Object.keys(HEADLINE_TEMPLATES.it).sort();
+  const enKeys = Object.keys(HEADLINE_TEMPLATES.en).sort();
+  assertEq(itKeys.length, enKeys.length, 'numero di categorie diverso IT vs EN');
+  itKeys.forEach(k => {
+    assert(enKeys.includes(k), 'categoria mancante in EN: ' + k);
+    assertEq(
+      HEADLINE_TEMPLATES.it[k].length,
+      HEADLINE_TEMPLATES.en[k].length,
+      'numero di titoli diverso per ' + k
+    );
+  });
+});
+
+test('v36: migrateSave inizializza i campi headline', () => {
+  withTestState(() => {
+    const raw = JSON.parse(JSON.stringify(S));
+    delete raw.lastHeadline;
+    delete raw._headlineLastIdx;
+    delete raw._prevChampionshipPos;
+    const mig = migrateSave(raw);
+    assertEq(mig.lastHeadline, null);
+    assertEq(typeof mig._headlineLastIdx, 'object');
+    assertEq(mig._prevChampionshipPos, null);
+  });
+});
 test('sprint: distribuisce esattamente 36 punti', () => {
   withTestState(() => {
     S.drivers.forEach(d => { d.pts = 0; });
@@ -11657,6 +12344,11 @@ const ACTIONS = {
   'season-eval': () => endSeason(),
   'progress-next': () => advanceFromProgress(),
   'market-pick': (d) => confirmAcceptOffer(+d.offerIndex),
+    'market-career-end': () => {
+    S.retired = true;
+    S.screen = 'retire';
+    save(); render();
+  },
   'regulation-pick': (d) => applyPlayerRegulationChoice(d.approachId),
     'rival-keep': () => keepCurrentRival(),
     'rival-switch-pick': (d) => {
