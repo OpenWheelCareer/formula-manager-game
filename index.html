@@ -2018,9 +2018,29 @@ const TRANSLATIONS = {
 'rd.tech_from_next':   'dal prossimo',
     'market.no_offers_desc': 'Nessuna scuderia ti ha offerto un contratto per la prossima stagione. La tua carriera in F1 finisce qui.',
     'market.retire_btn': 'CHIUDI LA CARRIERA',
+	    /* v37: cronaca post-gara */
+    'narr.title': '📖 Cronaca della gara',
+    'narr.start': 'Partenza dalla P{grid}. Luci spente, si parte.',
+    'narr.overtake': 'Sorpasso! Da P{from} a P{to}.',
+    'narr.lost': 'Perdi posizioni: da P{from} a P{to}.',
+    'narr.wear_critical': 'Gomme al limite: il degrado ti costa decimi.',
+    'narr.finish': 'Traguardo: P{pos}, +{pts} punti.',
+    'narr.dnf': 'Ritiro. Gara finita anzitempo.',
+    'narr.rival_beaten': 'Batti {rival}: P{me} contro P{rpos}.',
+    'narr.rival_ahead': '{rival} ti sta davanti. Serve una reazione.',
  },
 
   en: {
+      /* v37: post-race narrative */
+    'narr.title': '📖 Race report',
+    'narr.start': 'Starting from P{grid}. Lights out, here we go.',
+    'narr.overtake': 'Overtake! From P{from} to P{to}.',
+    'narr.lost': 'Losing positions: from P{from} to P{to}.',
+    'narr.wear_critical': 'Tyres on the limit: degradation is costing you tenths.',
+    'narr.finish': 'Chequered flag: P{pos}, +{pts} points.',
+    'narr.dnf': 'Retirement. Race over early.',
+    'narr.rival_beaten': 'You beat {rival}: P{me} vs P{rpos}.',
+    'narr.rival_ahead': '{rival} is ahead of you. Time to respond.',
       'market.no_offers_desc': 'No team offered you a contract for next season. Your F1 career ends here.',
     'market.retire_btn': 'END CAREER',
   /* ---- HQ ---- */
@@ -3201,6 +3221,7 @@ migrated.lang = SUPPORTED_LANGS.includes(migrated.lang) ? migrated.lang : UI_LAN
   migrated.difficulty = DIFFICULTIES[migrated.difficulty] ? migrated.difficulty : 'normal';
   migrated.forecast = (migrated.forecast && migrated.forecast.probs) ? migrated.forecast : null;
   migrated.raceLive = (migrated.raceLive && Array.isArray(migrated.raceLive.rows)) ? migrated.raceLive : null;
+    migrated.raceNarrative = Array.isArray(migrated.raceNarrative) ? migrated.raceNarrative : null;
   migrated.circuitStats = (migrated.circuitStats && typeof migrated.circuitStats === 'object' && !Array.isArray(migrated.circuitStats))
     ? migrated.circuitStats : {};
   migrated.reputation = Number.isFinite(migrated.reputation) ? clamp(migrated.reputation, 0, 100) : 30;
@@ -7586,7 +7607,8 @@ function buildRaceLive() {
     pending: 'pace', log: generateRadioPreRace(),
     ordersDone: false, ordersMateId: null,
     weatherForecast,           // v33
-    lastWeatherChangeStint: -1 // v33
+    lastWeatherChangeStint: -1,// v33
+    snapshots: []              // v37
   };
 }
 /* v34 fix: evaluatePitMove basata su simulazione del gap.
@@ -7868,8 +7890,8 @@ function applyPitStop(L, stintDoneIdx) {
       else if (breakdown.traffic > 1.5)  { text = t('rrace.pit_traffic',      { s: pitLossSec.toFixed(1) }); type = 'warn'; }
       else if (breakdown.stop > 3.2)     { text = t('rrace.pit_slow',         { s: pitLossSec.toFixed(1) }); type = 'warn'; }
       else if (breakdown.stop < 2.2)     { text = t('rrace.pit_fast',         { s: pitLossSec.toFixed(1) }); type = 'good'; }
-      else                               { text = t('rrace.pit_stop',         { s: pitLossSec.toFixed(1) }); type = 'info'; }
-      L.log.push({ lap, type, text });
+         else                               { text = t('rrace.pit_stop',         { s: pitLossSec.toFixed(1) }); type = 'info'; }
+      L.log.push({ lap, type, text, key: 'pit' });
     }
   });
 }
@@ -7992,13 +8014,13 @@ const dmg = computeDamagePerTick(r, mode.id, carNow, st.weight, halfIndex, teamR
     inc -= r.danno * DAMAGE_PACE_SLOPE;
 
     /* Radio: avvisa il player quando il danno supera le soglie */
-    if (d.isPlayer && !r.warnedDmg75 && r.danno > 75) {
-      r.warnedDmg75 = true;
-      L.log.push({ lap: st.lapTo, type: 'bad', text: t('rrace.dmg_critical') });
-    } else if (d.isPlayer && !r.warnedDmg55 && r.danno > 55) {
-      r.warnedDmg55 = true;
-      L.log.push({ lap: st.lapTo, type: 'warn', text: t('rrace.dmg_warn') });
-    }
+   if (d.isPlayer && !r.warnedDmg75 && r.danno > 75) {
+  r.warnedDmg75 = true;
+  L.log.push({ lap: st.lapTo, type: 'bad', text: t('rrace.dmg_critical'), key: 'damage' });
+} else if (d.isPlayer && !r.warnedDmg55 && r.danno > 55) {
+  r.warnedDmg55 = true;
+  L.log.push({ lap: st.lapTo, type: 'warn', text: t('rrace.dmg_warn'), key: 'damage' });
+}
 
     const dnfPerTick = damageDnfPerTick(r.danno);
     let risk = dnfPerTick * weight * w.chaos + (d.isPlayer ? mode.risk : 0);
@@ -8027,7 +8049,21 @@ const dmg = computeDamagePerTick(r, mode.id, carNow, st.weight, halfIndex, teamR
       });
     }
   }
+    /* v37: snapshot per la cronaca post-gara */
+  const orderSnap = liveStandings(L);
+  const myIdxSnap = orderSnap.findIndex(r => r.id === 'PLAYER');
+  const meSnap = L.rows.find(r => r.id === 'PLAYER');
+  L.snapshots.push({
+    lap: halfIndex === 0
+      ? Math.round(st.lapFrom + (st.lapTo - st.lapFrom) * STINT_SPLIT)
+      : st.lapTo,
+    myPos: myIdxSnap >= 0 ? myIdxSnap + 1 : null,
+    myWear: meSnap ? Math.round(meSnap.wear) : 0,
+    myDanno: meSnap ? Math.round(meSnap.danno) : 0,
+    weather: S.weather.name
+  });
 }
+
 
 /* v29 Step 6: applica solo il compaction del gruppo.
    La reazione tattica degli AI è delegata a simulateAISCReaction(). */
@@ -8210,11 +8246,12 @@ function applyWeatherChange(L, choice) {
   const lapsRemaining = Math.max(1, st.lapTo - st.lapFrom + 1);
 
   const lap = st.lapFrom;
-  L.log.push({
+   L.log.push({
     lap: lap - 1, type: 'warn',
     text: newWeatherName === 'Pioggia'
       ? t('rrace.weather_rain_start')
-      : t('rrace.weather_rain_stop')
+      : t('rrace.weather_rain_stop'),
+    key: 'weather'
   });
 
   /* Il compound "ideale" per il nuovo meteo */
@@ -8251,11 +8288,11 @@ function applyWeatherChange(L, choice) {
           Math.round(r.tempTyre * 0.55 + newAmbient * TYRE_TEMP_START_FACTOR * 0.45),
           TYRE_TEMP_MIN, TYRE_TEMP_MAX
         );
-        L.log.push({ lap, type: 'info', text: t('rrace.weather_pit_adapt') });
+               L.log.push({ lap, type: 'info', text: t('rrace.weather_pit_adapt'), key: 'weather-action' });
       } else {
         /* v35: stessa penalità degli AI che restano fuori */
         r.sc += stayOutKick(currentCompound);
-        L.log.push({ lap, type: 'warn', text: t('rrace.weather_stay_out') });
+        L.log.push({ lap, type: 'warn', text: t('rrace.weather_stay_out'), key: 'weather-action' });
       }
       return;
     }
@@ -8308,16 +8345,16 @@ function applyWeatherChange(L, choice) {
 function resolveLiveSC(L, choice) {
   const me = L.rows.find(r => r.id === 'PLAYER');
   const lap = getRaceStints()[L.sc.stint].lapTo;
-  if (choice === 'pit') {
+    if (choice === 'pit') {
     const team = teamById(S.player.teamId);
     const bias = team && Number.isFinite(team.pitCrewBias) ? team.pitCrewBias : 0;
     const scLoss = Math.max(0.2, SC_PIT_COST + bias * 0.3);
     me.wear = Math.max(0, me.wear - SC_PIT_WEAR_RELIEF);
     me.sc -= scLoss;
-    L.log.push({ lap, type: 'info', text: t('rrace.sc_pit_in') });
+    L.log.push({ lap, type: 'info', text: t('rrace.sc_pit_in'), key: 'sc-action' });
   } else {
     me.sc += SC_STAY_BONUS;
-    L.log.push({ lap, type: 'info', text: t('rrace.sc_stay_in') });
+    L.log.push({ lap, type: 'info', text: t('rrace.sc_stay_in'), key: 'sc-action' });
   }
   L.sc.resolved = true;
  
@@ -8495,6 +8532,9 @@ function finalizeRace(L) {
     event: true
   });
 
+   /* v37: cronaca generata prima di azzerare raceLive */
+  S.raceNarrative = buildRaceNarrative(L, me);
+
   S.round++;
   S.raceLive = null;
   S.sprintDone = false;
@@ -8503,7 +8543,102 @@ function finalizeRace(L) {
     processAIRDActivity(teamStandings(), true);
   }
 }
+/* v37: cronaca post-gara — narrativa derivata dai dati reali */
+function buildRaceNarrative(L, me) {
+  if (!me || !L) return [];
+  const events = [];
+  const totalLaps = (CALENDAR[S.round] && CALENDAR[S.round].laps) || 57;
+  const rival = rivalDriver();
 
+  /* 1. Partenza */
+  events.push({
+    lap: 1, icon: '🏁',
+    text: t('narr.start', { grid: me.grid })
+  });
+
+  /* 2. Eventi dal log — solo quelli taggati */
+  const KEEP_KEYS = new Set(['pit', 'pit-action', 'sc-action', 'weather', 'weather-action', 'damage']);
+  L.log.forEach(m => {
+    if (m.key && KEEP_KEYS.has(m.key)) {
+      events.push({
+        lap: m.lap,
+        icon: m.type === 'bad' ? '⚠️' : m.type === 'warn' ? '⚡' : m.type === 'good' ? '✨' : '📻',
+        text: m.text,
+        key: m.key
+      });
+    }
+  });
+
+  /* 3. Sorpassi — derivati dagli snapshot */
+  if (!me.dnf && Array.isArray(L.snapshots) && L.snapshots.length > 0) {
+    let prevPos = me.grid;
+    L.snapshots.forEach(s => {
+      if (!s.myPos) return;
+      if (s.myPos < prevPos) {
+        events.push({
+          lap: s.lap, icon: '🔼',
+          text: t('narr.overtake', { from: prevPos, to: s.myPos })
+        });
+      } else if (s.myPos > prevPos) {
+        events.push({
+          lap: s.lap, icon: '🔽',
+          text: t('narr.lost', { from: prevPos, to: s.myPos })
+        });
+      }
+      prevPos = s.myPos;
+    });
+  }
+
+  /* 4. Gomme finite a fine gara (se non già segnalato come damage) */
+  if (!me.dnf && L.snapshots && L.snapshots.length > 0) {
+    const maxWear = Math.max(...L.snapshots.map(s => s.myWear || 0));
+    if (maxWear > 65 && !events.some(e => e.key === 'damage')) {
+      const wearLap = L.snapshots.find(s => s.myWear > 65)?.lap || Math.round(totalLaps * 0.7);
+      events.push({ lap: wearLap, icon: '🛞', text: t('narr.wear_critical') });
+    }
+  }
+
+  /* 5. Confronto col rivale (se non ha già un evento dedicato) */
+  if (rival && !me.dnf) {
+    const rivalRow = S.lastRace ? S.lastRace.find(r => r.id === S.rivalId) : null;
+    if (rivalRow && !rivalRow.dnf && me.pos && rivalRow.pos) {
+      const lap = Math.round(totalLaps * 0.75);
+      if (me.pos < rivalRow.pos) {
+        events.push({
+          lap, icon: '⚔️',
+          text: t('narr.rival_beaten', { rival: rival.last || rival.name, me: me.pos, rpos: rivalRow.pos })
+        });
+      } else if (me.pos > rivalRow.pos) {
+        events.push({
+          lap, icon: '⚔️',
+          text: t('narr.rival_ahead', { rival: rival.last || rival.name })
+        });
+      }
+    }
+  }
+
+  /* 6. Arrivo */
+  events.push({
+    lap: totalLaps,
+    icon: me.dnf ? '💥' : me.pos === 1 ? '🏆' : me.pos <= 3 ? '🍾' : '🏁',
+    text: me.dnf
+      ? t('narr.dnf')
+      : t('narr.finish', { pos: me.pos, pts: me.points })
+  });
+
+  /* Ordina, deduplica per (lap, text), cap a 10 */
+  events.sort((a, b) => a.lap - b.lap);
+  const seen = new Set();
+  const clean = [];
+  for (const e of events) {
+    const k = e.lap + '|' + e.text;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    clean.push(e);
+    if (clean.length >= 10) break;
+  }
+  return clean;
+}
 function simRace() {
   const L = buildRaceLive();
   S.raceLive = L;    /* fix: rendi L visibile a choosePit/chooseLiveSC/ecc. */
@@ -8557,18 +8692,18 @@ function choosePit(choice) {
     : '';
 
   if (choice === 'pit') {
-    L.log.push({ lap, type: 'info', text: t('rrace.pit_early') + bonusTxt });
+    L.log.push({ lap, type: 'info', text: t('rrace.pit_early') + bonusTxt, key: 'pit' });
     if (evalResult.bonus >= 0.8) {
-      L.log.push({ lap, type: 'good', text: t('rrace.undercut_success', { sc: evalResult.bonus }) });
+      L.log.push({ lap, type: 'good', text: t('rrace.undercut_success', { sc: evalResult.bonus }), key: 'pit-action' });
     } else if (evalResult.bonus <= -0.5) {
-      L.log.push({ lap, type: 'warn', text: t('rrace.undercut_risky') });
+      L.log.push({ lap, type: 'warn', text: t('rrace.undercut_risky'), key: 'pit-action' });
     }
   } else {
-    L.log.push({ lap, type: 'info', text: t('rrace.pit_late') + bonusTxt });
+    L.log.push({ lap, type: 'info', text: t('rrace.pit_late') + bonusTxt, key: 'pit' });
     if (evalResult.bonus >= 0.8) {
-      L.log.push({ lap, type: 'good', text: t('rrace.overcut_success', { sc: evalResult.bonus }) });
+      L.log.push({ lap, type: 'good', text: t('rrace.overcut_success', { sc: evalResult.bonus }), key: 'pit-action' });
     } else if (evalResult.bonus <= -0.5) {
-      L.log.push({ lap, type: 'warn', text: t('rrace.overcut_risky') });
+      L.log.push({ lap, type: 'warn', text: t('rrace.overcut_risky'), key: 'pit-action' });
     }
   }
 
@@ -8907,6 +9042,29 @@ function viewRaceLive() {
 }
 
 /* ---------- RACE VIEW ---------- */
+/* v37: card cronaca post-gara */
+function raceNarrativeCard() {
+  const events = S.raceNarrative;
+  if (!Array.isArray(events) || events.length === 0) return '';
+
+  return `
+  <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden mb-4">
+    <div class="px-4 py-3 border-b border-slate-800 font-black text-xs uppercase tracking-wider flex items-center justify-between">
+      <span>${esc(t('narr.title'))}</span>
+      <span class="text-slate-500 font-normal normal-case">${events.length} ${currentLang() === 'it' ? 'momenti' : 'moments'}</span>
+    </div>
+    <div class="divide-y divide-slate-800/60">
+      ${events.map(e => `
+        <div class="radio-line flex items-start gap-3 px-4 py-2.5">
+          <span class="w-14 shrink-0 text-[11px] font-mono text-slate-400 mt-0.5">
+            ${esc(t('live.lap_short'))} ${e.lap}
+          </span>
+          <span class="text-base shrink-0">${e.icon}</span>
+          <span class="flex-1 text-sm text-slate-200">${esc(e.text)}</span>
+        </div>`).join('')}
+    </div>
+  </div>`;
+}
 function viewRace() {
   const r = CALENDAR[S.round - 1];
   const me = S.lastRace.find(x => x.id === 'PLAYER');
@@ -8949,7 +9107,7 @@ function viewRace() {
         ${me.pos === 1 ? `<div class="text-gold font-black mt-2 text-lg">${esc(t('result.win_banner'))}</div>` : ''}
       `}
     </div>
-
+  ${raceNarrativeCard()}
     ${rival && lastRivalClash ? `
     <div class="bg-carbon2 rounded-2xl neon-soft overflow-hidden mb-4 border border-slate-700/50">
       <div class="px-4 py-2 bg-gradient-to-r from-racing/20 to-transparent">
@@ -9033,6 +9191,7 @@ function afterRace() {
   S.raceLive = null;
   S.lastSprint = null;
     S.asphaltTemp = null;
+  S.raceNarrative = null;   // v37
   if (S.round >= CALENDAR.length) S.screen = 'seasonEnd';
   else { S.screen = 'hub'; S.tab = S.rdOpen ? 'rd' : 'race'; }
   scheduleSave(0); render();
